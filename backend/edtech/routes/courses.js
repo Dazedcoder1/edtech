@@ -1,13 +1,12 @@
 ﻿import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
+import jwt from "jsonwebtoken";
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // GET /api/courses
-// Now ordered by display_order first (the mentor's manual priority),
-// falling back to created_at so newly created courses without an
-// explicit order still appear in a sensible place.
 router.get("/", async (req, res) => {
     try {
         const result = await pool.query(`
@@ -15,7 +14,7 @@ router.get("/", async (req, res) => {
             FROM courses c
             JOIN users u ON c.educator_id = u.id
             WHERE c.is_active = true AND c.deleted_at IS NULL
-            ORDER BY COALESCE(c.display_order, 0) ASC, c.created_at ASC
+            ORDER BY c.created_at DESC
         `);
         res.json({ success: true, courses: result.rows });
     } catch (err) {
@@ -66,7 +65,7 @@ router.get("/my-courses", authMiddleware, async (req, res) => {
                 WHERE c.educator_id = $1
                     AND c.deleted_at IS NULL
                 GROUP BY c.id, u.name
-                ORDER BY COALESCE(c.display_order, 0) ASC, c.created_at ASC
+                ORDER BY c.created_at DESC
             `, [userId]);
             courses = result.rows;
         } else if (userRole === "admin") {
@@ -97,51 +96,6 @@ router.get("/my-courses", authMiddleware, async (req, res) => {
     }
 });
 
-// PUT /api/courses/reorder
-// Body: { orderedIds: [id1, id2, id3, ...] }
-// The array's position becomes each course's new display_order (0-based).
-// This is called for a single sibling group at a time -- either the
-// top-level course rows, or the child/subject courses under one parent --
-// so ordering never mixes unrelated groups together.
-// IMPORTANT: this route must be declared before "/:id" routes below,
-// otherwise Express would try to treat "reorder" as an :id parameter.
-router.put("/reorder", authMiddleware, async (req, res) => {
-    try {
-        const { orderedIds } = req.body;
-
-        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
-            return res.status(400).json({ error: "orderedIds array is required" });
-        }
-
-        const client = await pool.connect();
-
-        try {
-            await client.query("BEGIN");
-
-            for (let i = 0; i < orderedIds.length; i++) {
-                await client.query(
-                    `UPDATE courses
-                     SET display_order = $1, updated_at = NOW()
-                     WHERE id = $2 AND educator_id = $3`,
-                    [i, orderedIds[i], req.user.id]
-                );
-            }
-
-            await client.query("COMMIT");
-
-            res.json({ success: true, message: "Order updated successfully" });
-        } catch (err) {
-            await client.query("ROLLBACK");
-            throw err;
-        } finally {
-            client.release();
-        }
-    } catch (err) {
-        console.error("Reorder error:", err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // GET /api/courses/:id
 router.get("/:id", async (req, res) => {
     try {
@@ -162,7 +116,7 @@ router.get("/:id", async (req, res) => {
 
         const modulesResult = await pool.query(`
             SELECT * FROM modules
-            WHERE course_id = $1
+            WHERE course_id = $1 AND is_active = true
             ORDER BY module_order ASC
         `, [id]);
 
@@ -170,13 +124,37 @@ router.get("/:id", async (req, res) => {
         for (const module of modulesResult.rows) {
             let contents = [];
             if (module.content_ids && module.content_ids.length > 0) {
+                // ✅ FIXED: Added all needed fields including file_size_bytes
                 const contentResult = await pool.query(`
-                    SELECT id, title, description, content_type, duration_seconds,
-                           thumbnail_url, preview, created_at
+                    SELECT 
+                        id, 
+                        title, 
+                        description, 
+                        content_type, 
+                        duration_seconds,
+                        thumbnail_url, 
+                        preview, 
+                        priority, 
+                        file_size_bytes,
+                        file_name,
+                        mime_type,
+                        status,
+                        r2_key,
+                        created_at,
+                        folder_id
                     FROM content_items
                     WHERE id = ANY($1::uuid[])
                     AND status = 'ready'
+                    AND is_active = true
                 `, [module.content_ids]);
+                
+                // Log the file sizes for debugging
+                contentResult.rows.forEach(c => {
+                    if (c.content_type === 'pdf') {
+                        console.log(`📄 PDF: ${c.title} - ${c.file_size_bytes || 0} bytes`);
+                    }
+                });
+                
                 contents = contentResult.rows;
             }
             modules.push({ ...module, contents });
@@ -192,7 +170,7 @@ router.get("/:id", async (req, res) => {
                 const decoded = jwt.verify(token, JWT_SECRET);
 
                 const enrollmentCheck = await pool.query(
-                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2`,
+                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
                     [decoded.id, id]
                 );
                 isEnrolled = enrollmentCheck.rows.length > 0;
@@ -210,6 +188,7 @@ router.get("/:id", async (req, res) => {
             modules
         });
     } catch (err) {
+        console.error("Course fetch error:", err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -259,6 +238,43 @@ router.post("/", authMiddleware, async (req, res) => {
     } catch (err) {
         console.error("Course creation error:", err);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT /api/courses/reorder
+router.put("/reorder", authMiddleware, async (req, res) => {
+    try {
+        const { orderedIds } = req.body;
+
+        if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+            return res.status(400).json({ error: "orderedIds array is required" });
+        }
+
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+
+            for (let i = 0; i < orderedIds.length; i++) {
+                await client.query(
+                    `UPDATE courses
+                     SET display_order = $1, updated_at = NOW()
+                     WHERE id = $2 AND educator_id = $3`,
+                    [i, orderedIds[i], req.user.id]
+                );
+            }
+
+            await client.query("COMMIT");
+        } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        res.json({ success: true, message: "Order updated" });
+    } catch (err) {
+        console.error("Reorder error:", err);
+        res.status(500).json({ error: err.message });
     }
 });
 

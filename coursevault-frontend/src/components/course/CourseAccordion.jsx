@@ -5,6 +5,7 @@ import { fetchAPI } from '../../services/api.js';
 import InlineVideoPlayer from './InlineVideoPlayer.jsx';
 import QuizModal from '../educator/QuizModal.jsx';
 import QuizTakeModal from './QuizTakeModal.jsx';
+import MathDisplay from '../ui/MathDisplay.jsx';
 
 export default function CourseAccordion({
   module,
@@ -147,7 +148,7 @@ export default function CourseAccordion({
     }
   };
 
-  const getPriorityLevel = (p) => (!p || p === 0 ? 2 : p); // Default unassigned to Medium (2)
+  const getPriorityLevel = (p) => (!p || p === 0 ? 2 : p);
 
   const activeContents = contents
     .filter(c => activeTabId === null ? !c.folder_id : c.folder_id === activeTabId)
@@ -190,7 +191,7 @@ export default function CourseAccordion({
       {isOpen && (
         <div className="border-t-2 border-black bg-gray-50 flex flex-col animate-in fade-in slide-in-from-top-4 duration-300">
 
-          {/* 1. Browser Tabs UI */}
+          {/* Browser Tabs UI */}
           <div className="flex items-end gap-x-1.5 md:gap-x-2 overflow-x-auto pt-2 md:pt-4 px-2 md:px-4 bg-[#F4DFD8] border-b-2 border-black scrollbar-hide pb-0">
             <button
               onClick={() => setActiveTabId(null)}
@@ -238,10 +239,10 @@ export default function CourseAccordion({
             )}
           </div>
 
-          {/* 2. Active Tab Workspace */}
+          {/* Active Tab Workspace */}
           <div className="p-3 md:p-8 bg-white min-h-0 md:min-h-[300px] relative">
 
-            {/* Tab Creation Action Bar (Creator only) */}
+            {/* Tab Creation Action Bar */}
             {isCreator && (
               <div className="flex flex-wrap gap-2 md:gap-4 mb-4 md:mb-8 pb-4 md:pb-6 border-b-2 border-dashed border-gray-300">
                 <button onClick={() => onAddContent(module.id, activeTabId)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-1.5 md:py-2.5 bg-[#87CEFA] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
@@ -374,7 +375,9 @@ export default function CourseAccordion({
                           <HelpCircle size={14} className="md:w-[18px] md:h-[18px]" />
                         </div>
                         <div className="min-w-0">
-                          <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 truncate">{quiz.title}</h4>
+                          <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 truncate">
+                            <MathDisplay text={quiz.title} />
+                          </h4>
                           <p className="text-xs md:text-sm font-medium text-gray-500">{quiz.question_count} question{quiz.question_count === 1 ? '' : 's'}</p>
                         </div>
                       </div>

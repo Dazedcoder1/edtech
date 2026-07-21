@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI } from '../../services/api.js';
+import MathInput from '../ui/MathInput.jsx';
+import MathDisplay from '../ui/MathDisplay.jsx';
 
 const emptyQuestion = () => ({
   question_text: '',
@@ -106,20 +108,20 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
         <form onSubmit={handleSubmit} className="overflow-y-auto p-6 flex flex-col gap-6">
           <div>
             <label className="block font-bold text-sm mb-1">Quiz Title</label>
-            <input
+            <MathInput
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium"
+              onChange={setTitle}
               placeholder="e.g. Chapter 1 Recap Quiz"
             />
           </div>
 
           <div>
             <label className="block font-bold text-sm mb-1">Description (optional)</label>
-            <textarea
+            <MathInput
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium"
+              onChange={setDescription}
+              placeholder="Add description..."
+              multiline={true}
               rows={2}
             />
           </div>
@@ -139,11 +141,12 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
                 )}
               </div>
 
-              <input
+              <MathInput
                 value={q.question_text}
-                onChange={(e) => updateQuestion(qIndex, { question_text: e.target.value })}
-                className="w-full border-2 border-black rounded-lg px-3 py-2 font-medium"
-                placeholder="Question text"
+                onChange={(val) => updateQuestion(qIndex, { question_text: val })}
+                placeholder="Question text (supports math equations)"
+                multiline={true}
+                rows={2}
               />
 
               <div className="flex flex-col gap-2">
@@ -156,11 +159,11 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
                       onChange={() => updateQuestion(qIndex, { correct_option_index: oIndex })}
                       title="Mark as correct answer"
                     />
-                    <input
+                    <MathInput
                       value={opt}
-                      onChange={(e) => updateOption(qIndex, oIndex, e.target.value)}
-                      className="flex-1 border-2 border-black rounded-lg px-3 py-1.5 text-sm font-medium"
+                      onChange={(val) => updateOption(qIndex, oIndex, val)}
                       placeholder={`Option ${oIndex + 1}`}
+                      className="flex-1"
                     />
                     {q.options.length > 2 && (
                       <button type="button" onClick={() => removeOption(qIndex, oIndex)} className="text-red-500">

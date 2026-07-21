@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Trophy, Target, ArrowRight, RotateCcw } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI } from '../../services/api.js';
+import MathDisplay from '../ui/MathDisplay.jsx';
 
 export default function QuizTakeModal({ quizId, onClose }) {
   const [quiz, setQuiz] = useState(null);
@@ -75,7 +76,11 @@ export default function QuizTakeModal({ quizId, onClose }) {
         <div className="flex justify-between items-center p-3 md:p-5 border-b-2 md:border-b-[3px] border-black bg-[#87CEFA]">
           <div className="min-w-0 pr-2">
             <h3 className="font-black text-base md:text-2xl uppercase leading-tight truncate">{quiz?.title || "Loading Quiz..."}</h3>
-            {quiz?.description && <p className="text-xs md:text-sm font-bold mt-0.5 md:mt-1 text-black/70 line-clamp-2">{quiz.description}</p>}
+            {quiz?.description && (
+              <div className="text-xs md:text-sm font-bold mt-0.5 md:mt-1 text-black/70 line-clamp-2">
+                <MathDisplay text={quiz.description} />
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -85,21 +90,19 @@ export default function QuizTakeModal({ quizId, onClose }) {
           </button>
         </div>
 
-        {/* Loading State */}
         {isLoading && (
           <div className="p-8 md:p-12 text-center font-bold text-base md:text-xl text-gray-500">
             Loading questions...
           </div>
         )}
 
-        {/* Quiz Taking State */}
         {!isLoading && !scorecard && (
           <form onSubmit={handleSubmit} className="overflow-y-auto p-3 md:p-8 flex flex-col gap-4 md:gap-8 bg-[#F4F4F4]">
             {questions.map((q, index) => (
               <div key={q.id} className="bg-white border-2 border-black rounded-xl md:rounded-2xl p-3 md:p-6 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111]">
                 <h4 className="font-black text-sm md:text-xl mb-2.5 md:mb-4">
                   <span className="text-[#F26B4D] mr-1.5 md:mr-2">{index + 1}.</span> 
-                  {q.question_text}
+                  <MathDisplay text={q.question_text} />
                 </h4>
                 
                 <div className="flex flex-col gap-2 md:gap-3">
@@ -123,7 +126,9 @@ export default function QuizTakeModal({ quizId, onClose }) {
                           onChange={() => handleOptionSelect(q.id, optIndex)}
                           className="hidden"
                         />
-                        <span className="text-sm md:text-lg">{opt}</span>
+                        <span className="text-sm md:text-lg">
+                          <MathDisplay text={opt} />
+                        </span>
                       </label>
                     );
                   })}
@@ -139,7 +144,6 @@ export default function QuizTakeModal({ quizId, onClose }) {
           </form>
         )}
 
-        {/* Scorecard State */}
         {scorecard && (
           <div className="flex flex-col items-center justify-center p-6 md:p-12 bg-white text-center overflow-y-auto">
             
