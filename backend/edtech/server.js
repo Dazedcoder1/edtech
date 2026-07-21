@@ -175,11 +175,25 @@ async function setupDatabase() {
 setupDatabase();
 
 // ============================================
-// Middleware (🌟 UPDATED FOR LARGE VIDEOS)
+// ⭐ FIXED CORS Middleware (NO app.options('*'))
 // ============================================
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
-app.use(cors());
+
+// Enable CORS with proper settings
+const corsOptions = {
+    origin: ['http://localhost:5173', 'http://localhost:3000', 'https://sv.gridsphere.in', 'http://localhost:5174'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: true,
+    optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+
+// Serve uploaded files statically
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/temp_videos', express.static(path.join(__dirname, 'temp_videos')));
 
 app.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");

@@ -5,6 +5,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
+import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
 import authMiddleware from "../middleware/auth.js";
@@ -197,38 +198,156 @@ router.get("/:id/status", async (req, res) => {
     }
 });
 
+// ============================================
+// ⭐ FIXED PDF ROUTE
+// ============================================
 // GET /api/content/:id/pdf
 router.get("/:id/pdf", authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
+        const { courseId } = req.query;
         
-        if (!req.isContentCreator && !req.isEnrolled && !req.isPreviewContent) {
+        console.log(`📄 PDF Request: contentId=${id}, courseId=${courseId}`);
+        console.log(`👤 User: ${req.user.id} (${req.user.role})`);
+        
+        // Get content from database
+        const result = await pool.query(`SELECT * FROM content_items WHERE id = $1`, [id]);
+        if (result.rows.length === 0) {
+            console.log(`❌ Content not found: ${id}`);
+            return res.status(404).json({ error: "Content not found" });
+        }
+        
+        const content = result.rows[0];
+        console.log(`📄 Content found: "${content.title}" (${content.content_type})`);
+        console.log(`📄 R2 Key: ${content.r2_key}`);
+        
+        // Check if it's a PDF
+        if (content.content_type !== "pdf") {
+            console.log(`❌ Not a PDF: ${content.content_type}`);
+            return res.status(400).json({ error: "Not a PDF file" });
+        }
+        
+        // Check if user has access
+        let hasAccess = false;
+        
+        // Check if user is course creator
+        if (courseId) {
+            const courseCheck = await pool.query(
+                `SELECT educator_id FROM courses WHERE id = $1`,
+                [courseId]
+            );
+            
+            if (courseCheck.rows.length > 0) {
+                const isCreator = courseCheck.rows[0].educator_id === req.user.id;
+                if (isCreator) {
+                    hasAccess = true;
+                    console.log(`✅ User is course creator`);
+                }
+            }
+            
+            // Check if user is enrolled
+            if (!hasAccess) {
+                const enrollmentCheck = await pool.query(
+                    `SELECT * FROM enrollments WHERE user_id = $1 AND course_id = $2`,
+                    [req.user.id, courseId]
+                );
+                
+                if (enrollmentCheck.rows.length > 0) {
+                    hasAccess = true;
+                    console.log(`✅ User is enrolled in course`);
+                }
+            }
+        }
+        
+        // Check if content is preview
+        if (!hasAccess && content.preview) {
+            hasAccess = true;
+            console.log(`✅ Content is preview, access granted`);
+        }
+        
+        // Check if user is admin
+        if (!hasAccess && req.user.role === 'admin') {
+            hasAccess = true;
+            console.log(`✅ User is admin, access granted`);
+        }
+        
+        if (!hasAccess) {
+            console.log(`❌ Access denied for user ${req.user.id}`);
             return res.status(403).json({ 
                 error: "Access denied. You are not enrolled in this course.",
-                requiresEnrollment: true,
-                courseId: req.courseId
+                requiresEnrollment: true
             });
         }
         
-        const result = await pool.query(`SELECT * FROM content_items WHERE id = $1`, [id]);
-        if (result.rows.length === 0) return res.status(404).json({ error: "Content not found" });
-        const content = result.rows[0];
-        if (content.content_type !== "pdf") return res.status(400).json({ error: "Not a PDF file" });
-
-        const command = new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: content.r2_key });
-        const r2Response = await r2Client.send(command);
-        const chunks = [];
-        for await (const chunk of r2Response.Body) chunks.push(chunk);
-
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", "inline");
-        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
-        res.setHeader("X-Frame-Options", "DENY");
-        res.send(Buffer.concat(chunks));
+        // Check if r2_key exists
+        if (!content.r2_key) {
+            console.error(`❌ No r2_key for content ${id}`);
+            return res.status(404).json({ error: "PDF file not found in storage" });
+        }
+        
+        // Get PDF from R2
+        try {
+            console.log(`🔍 Fetching from R2: ${content.r2_key}`);
+            
+            const command = new GetObjectCommand({ 
+                Bucket: R2_BUCKET_NAME, 
+                Key: content.r2_key 
+            });
+            
+            const r2Response = await r2Client.send(command);
+            console.log(`✅ R2 response received`);
+            
+            // Read the file
+            const chunks = [];
+            for await (const chunk of r2Response.Body) {
+                chunks.push(chunk);
+            }
+            
+            const pdfBuffer = Buffer.concat(chunks);
+            console.log(`📄 PDF size: ${pdfBuffer.length} bytes`);
+            
+            // Set headers for PDF
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(content.file_name || content.title + '.pdf')}"`);
+            res.setHeader("Content-Length", pdfBuffer.length);
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+            res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            
+            // Send the PDF
+            res.send(pdfBuffer);
+            
+            console.log(`✅ PDF served successfully: ${content.title}`);
+            
+        } catch (r2Error) {
+            console.error(`❌ R2 fetch error:`, r2Error);
+            
+            // Check if it's a "NoSuchKey" error
+            if (r2Error.name === "NoSuchKey" || r2Error.Code === "NoSuchKey") {
+                return res.status(404).json({ 
+                    error: "PDF file not found in storage. Please re-upload the file."
+                });
+            }
+            
+            throw r2Error;
+        }
+        
     } catch (err) {
-        console.error("PDF fetch error:", err);
-        res.status(500).json({ error: err.message });
+        console.error("❌ PDF fetch error:", err);
+        res.status(500).json({ 
+            error: "Failed to load PDF",
+            details: err.message 
+        });
     }
+});
+
+// OPTIONS route for CORS preflight
+router.options("/:id/pdf", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.status(200).end();
 });
 
 // GET /api/content/:id/stream
