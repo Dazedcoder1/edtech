@@ -184,54 +184,60 @@ export default function CourseDetailPage() {
 
   return (
     <div className="max-w-5xl mx-auto pb-20">
-      <button onClick={() => navigate(-1)} className="mb-8 font-bold text-xs uppercase tracking-widest hover:text-[#F26B4D]">← Back</button>
+      <button 
+  onClick={() => navigate(-1)} 
+  className="flex items-center justify-center w-9 h-9 md:w-auto md:h-auto mb-4 md:mb-8 bg-white border-2 border-black rounded-full md:rounded-lg md:px-4 md:py-2 font-bold text-xs uppercase tracking-widest shadow-[2px_2px_0px_0px_#111] hover:bg-[#F9E076] transition-colors"
+>
+  <span className="md:hidden text-base leading-none normal-case">←</span>
+  <span className="hidden md:inline">← Back</span>
+</button>
 
-      <div className="relative mb-12">
-        <div className="absolute inset-0 bg-[#111] rounded-[24px] translate-x-3 translate-y-3 z-0"></div>
-        <div className={`relative z-10 ${getBgColor(course.id)} border-2 border-black rounded-[24px] p-8 md:p-12 shadow-[4px_4px_0px_0px_#111]`}>
-          <div className="flex justify-between items-start mb-6">
-             <Badge colorClass="bg-white">{course.category || 'General'}</Badge>
-             {isCreator && <Badge colorClass="bg-[#F9E076]">Creator View</Badge>}
-          </div>
-          <h1 className="text-4xl md:text-6xl font-black mb-4">{course.title}</h1>
-          <p className="text-lg font-bold text-black/70 mb-8 max-w-2xl">{course.description}</p>
-          
-          <div className="flex flex-wrap gap-3">
-            {isCreator ? (
-               <>
-                 <button
-                   onClick={handleTogglePublish}
-                   className={`px-4 py-2 font-bold border-[3px] border-black rounded-xl shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all flex items-center gap-2 ${
-                     isPublished 
-                       ? "bg-[#A7E2D1] text-black" 
-                       : "bg-white text-gray-500" 
-                   }`}
-                 >
-                   <div className={`w-3 h-3 rounded-full border-2 border-black ${isPublished ? "bg-[#F26B4D]" : "bg-gray-400"}`}></div>
-                   {isPublished ? "Published" : "Draft"}
-                 </button>
+      <div className="relative mb-6 md:mb-12">
+  <div className="absolute inset-0 bg-[#111] rounded-2xl md:rounded-[24px] translate-x-2 translate-y-2 md:translate-x-3 md:translate-y-3 z-0"></div>
+  <div className={`relative z-10 ${getBgColor(course.id)} border-2 border-black rounded-2xl md:rounded-[24px] p-5 md:p-12 shadow-[4px_4px_0px_0px_#111]`}>
+    <div className="flex justify-between items-start mb-3 md:mb-6">
+       <Badge colorClass="bg-white">{course.category || 'General'}</Badge>
+       {isCreator && <Badge colorClass="bg-[#F9E076]">Creator View</Badge>}
+    </div>
+    <h1 className="text-2xl md:text-6xl font-black mb-2 md:mb-4">{course.title}</h1>
+    <p className="text-sm md:text-lg font-bold text-black/70 mb-4 md:mb-8 max-w-2xl">{course.description}</p>
+    
+    <div className="flex flex-wrap gap-2 md:gap-3">
+      {isCreator ? (
+         <>
+           <button
+             onClick={handleTogglePublish}
+             className={`px-3 py-1.5 md:px-4 md:py-2 text-sm md:text-base font-bold border-2 md:border-[3px] border-black rounded-lg md:rounded-xl shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all flex items-center gap-2 ${
+               isPublished 
+                 ? "bg-[#A7E2D1] text-black" 
+                 : "bg-white text-gray-500" 
+             }`}
+           >
+             <div className={`w-2.5 h-2.5 md:w-3 md:h-3 rounded-full border-2 border-black ${isPublished ? "bg-[#F26B4D]" : "bg-gray-400"}`}></div>
+             {isPublished ? "Published" : "Draft"}
+           </button>
 
-                 <Button variant="secondary" onClick={() => setIsCourseModalOpen(true)} className="px-6 rounded-xl border-[3px]">Edit</Button>
-                 <Button variant="accent" onClick={() => {setEditingModule(null); setIsModuleModalOpen(true);}} className="px-6 rounded-xl border-[3px]">Add Module</Button>
-                 <Button variant="primary" onClick={() => setIsEnrollmentsModalOpen(true)} className="px-6 rounded-xl border-[3px] bg-[#87CEFA]">Students</Button>
-                 
-                 <button onClick={handleDeleteCourse} className="px-6 py-4 border-[3px] border-black rounded-xl font-bold bg-white text-red-500 hover:bg-red-50 shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111]">
-                   <Trash2 size={18} />
-                 </button>
-               </>
-            ) : (
-              <Button 
-                variant="secondary" 
-                onClick={isEnrolled ? () => {} : handleEnroll} 
-                disabled={isEnrolling}
-                className="px-10 rounded-[40px] border-[3px]"
-              >
-                {isEnrolling ? 'Processing...' : isEnrolled ? 'Continue Learning' : `Enroll - ₹${course.price}`}
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
+           <Button variant="secondary" onClick={() => setIsCourseModalOpen(true)} className="px-4 md:px-6 py-1.5 md:py-2 text-sm md:text-base rounded-lg md:rounded-xl border-2 md:border-[3px]">Edit</Button>
+           <Button variant="accent" onClick={() => {setEditingModule(null); setIsModuleModalOpen(true);}} className="px-4 md:px-6 py-1.5 md:py-2 text-sm md:text-base rounded-lg md:rounded-xl border-2 md:border-[3px]">Add Module</Button>
+           <Button variant="primary" onClick={() => setIsEnrollmentsModalOpen(true)} className="px-4 md:px-6 py-1.5 md:py-2 text-sm md:text-base rounded-lg md:rounded-xl border-2 md:border-[3px] bg-[#87CEFA]">Students</Button>
+           
+           <button onClick={handleDeleteCourse} className="px-4 py-1.5 md:px-6 md:py-4 border-2 md:border-[3px] border-black rounded-lg md:rounded-xl font-bold bg-white text-red-500 hover:bg-red-50 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111]">
+             <Trash2 size={16} className="md:w-[18px] md:h-[18px]" />
+           </button>
+         </>
+      ) : (
+       <Button 
+  variant="secondary" 
+  onClick={isEnrolled ? () => {} : handleEnroll} 
+  disabled={isEnrolling}
+  className="px-4 md:px-10 py-2 md:py-3 text-xs md:text-base rounded-lg md:rounded-full border-2 md:border-[3px] w-auto"
+>
+  {isEnrolling ? 'Processing...' : isEnrolled ? 'Continue Learning' : `Enroll - ₹${course.price}`}
+</Button>
+      )}
+    </div>
+  </div>
+</div>
 
       <h2 className="text-3xl font-black mb-8">Curriculum</h2>
       <div className="flex flex-col gap-6">
