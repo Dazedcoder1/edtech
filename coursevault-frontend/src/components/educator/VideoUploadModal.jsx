@@ -40,8 +40,8 @@ export default function VideoUploadModal({ isOpen, onClose, moduleId, onUploadSu
     setError(null);
 
     try {
-      // 🚀 Connects directly to our XHR progress tracker utility
-      const result = await uploadVideoWithProgress(moduleId, file, (percentComplete) => {
+      // Connects directly to our XHR progress tracker utility
+      const result = await uploadVideoWithProgress(moduleId, file, title, description, (percentComplete) => {
         setProgress(percentComplete);
       });
 
@@ -155,7 +155,7 @@ export default function VideoUploadModal({ isOpen, onClose, moduleId, onUploadSu
             >
               Cancel
             </button>
-            <Button type="submit" variant="primary" className="py-2" disabled={isSubmitting || uploading || !file}>
+            <Button type="submit" variant="primary" className="py-2" disabled={uploading || !file}>
               {uploading ? 'Processing File...' : 'Start Upload'}
             </Button>
           </div>

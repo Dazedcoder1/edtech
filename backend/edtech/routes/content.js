@@ -23,11 +23,54 @@ if (!fs.existsSync(TEMP_VIDEO_DIR)) {
     fs.mkdirSync(TEMP_VIDEO_DIR, { recursive: true });
 }
 
-// Memory constraints protection
+// Small assets (PDFs/docs) stay in memory — fine at 50MB.
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 500 * 1024 * 1024 } // 500MB Limit
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB Limit for non-video content
 });
+
+// 🚀 FIX: Videos stream straight to disk instead of buffering into RAM.
+// At 3GB, memoryStorage would need 3GB of RAM per concurrent upload — a
+// couple of simultaneous uploads would OOM-crash the whole Node process.
+// diskStorage writes the incoming stream directly to TEMP_VIDEO_DIR.
+const videoUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, TEMP_VIDEO_DIR),
+        filename: (req, file, cb) => cb(null, `raw_${crypto.randomUUID()}${getFileExtension(file.originalname)}`)
+    }),
+    limits: { fileSize: 3 * 1024 * 1024 * 1024 } // 3GB Limit for videos
+});
+
+// 🚀 FIX: Wrap Multer middleware so LIMIT_FILE_SIZE and other Multer errors
+// return a clean JSON 4xx instead of crashing as an unhandled error.
+function handleUpload(multerMiddleware) {
+    return (req, res, next) => {
+        multerMiddleware(req, res, (err) => {
+            if (err) {
+                if (err instanceof multer.MulterError) {
+                    if (err.code === 'LIMIT_FILE_SIZE') {
+                        return res.status(413).json({ error: "File is too large. Maximum allowed size is 3GB for videos." });
+                    }
+                    return res.status(400).json({ error: err.message });
+                }
+                return res.status(500).json({ error: err.message });
+            }
+            next();
+        });
+    };
+}
+
+// Streaming SHA-256 hash for disk-based files (videos) — avoids reading the
+// whole file into memory just to hash it.
+function hashFileFromDisk(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
+}
 
 const activeJobs = new Map();
 
@@ -38,7 +81,7 @@ function cleanResolutionString(scaleStr) {
 }
 
 // POST /api/content/upload
-router.post("/upload", authMiddleware, upload.single("file"), async (req, res) => {
+router.post("/upload", authMiddleware, handleUpload(upload.single("file")), async (req, res) => {
     const client = await pool.connect();
     try {
         // Fallback checks both req.body AND req.query for maximum reliability!
@@ -115,8 +158,10 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
 });
 
 // POST /api/content/upload-video
-router.post("/upload-video", authMiddleware, upload.single("file"), async (req, res) => {
+router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("file")), async (req, res) => {
     const client = await pool.connect();
+    // Track the raw disk path Multer wrote to, so it can be cleaned up on any early-exit path.
+    let rawDiskPath = null;
     try {
         // Fallback checks both req.body AND req.query for maximum reliability!
         const moduleId = req.body.moduleId || req.query.moduleId;
@@ -124,15 +169,23 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
         const file = req.file;
 
         if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            if (file) fs.unlinkSync(file.path);
             return res.status(403).json({ error: "Only educators can upload videos" });
         }
 
         if (!file) return res.status(400).json({ error: "No file uploaded" });
-        if (!title) return res.status(400).json({ error: "Title is required" });
-        if (!moduleId) return res.status(400).json({ error: "moduleId is required" });
-        if (!file.mimetype.startsWith("video/")) return res.status(400).json({ error: "Only video files are allowed" });
+        rawDiskPath = file.path;
 
-        const fileHash = generateFileHash(file.buffer);
+        if (!title) { fs.unlinkSync(rawDiskPath); return res.status(400).json({ error: "Title is required" }); }
+        if (!moduleId) { fs.unlinkSync(rawDiskPath); return res.status(400).json({ error: "moduleId is required" }); }
+        if (!file.mimetype.startsWith("video/")) {
+            fs.unlinkSync(rawDiskPath);
+            return res.status(400).json({ error: "Only video files are allowed" });
+        }
+
+        // 🚀 FIX: File already lives on disk (Multer diskStorage) — hash it by
+        // streaming instead of loading a buffer, so a 3GB file never sits in RAM.
+        const fileHash = await hashFileFromDisk(rawDiskPath);
         const extension = getFileExtension(file.originalname);
 
         // 🚀 FIX: Same as /upload — only ACTIVE rows count as a real duplicate.
@@ -144,6 +197,7 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
             [fileHash]
         );
         if (existing.rows.length > 0) {
+            fs.unlinkSync(rawDiskPath); // duplicate content — discard the fresh upload, we already have it
             const existingId = existing.rows[0].id;
             await client.query(`
                 UPDATE modules 
@@ -154,9 +208,11 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
             return res.status(200).json({ success: true, message: "Video already exists.", content: existing.rows[0], isDuplicate: true });
         }
 
+        // Rename to the hash-based name transcodeVideo/cleanup expects.
         const tempFilePath = path.join(TEMP_VIDEO_DIR, `${fileHash}${extension}`);
-        fs.writeFileSync(tempFilePath, file.buffer);
-        
+        fs.renameSync(rawDiskPath, tempFilePath);
+        rawDiskPath = null; // ownership moved to tempFilePath now
+
         let videoInfo = { width: 0, height: 0, duration: 0 };
         try {
             videoInfo = await new Promise((resolve, reject) => {
@@ -224,6 +280,9 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Video Upload error:", err);
+        if (rawDiskPath && fs.existsSync(rawDiskPath)) {
+            try { fs.unlinkSync(rawDiskPath); } catch (_) {}
+        }
         res.status(500).json({ success: false, error: err.message });
     } finally {
         client.release();
@@ -602,13 +661,18 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                     playlistPath
                 ]);
 
-                ffmpeg.stderr.on("data", (data) => {
-                    const str = data.toString();
-                    const match = str.match(/frame=\s*(\d+)/);
-                    if (match && parseInt(match[1]) % 500 === 0) {
-                        console.log(`   🎬 ${resName}: frame ${match[1]}`);
+            let lastLoggedFrame = 0;
+            ffmpeg.stderr.on("data", (data) => {
+                const str = data.toString();
+                const match = str.match(/frame=\s*(\d+)/);
+                if (match) {
+                    const currentFrame = parseInt(match[1]);
+                    if (currentFrame - lastLoggedFrame >= 500) {
+                        console.log(`   🎬 ${resName}: frame ${currentFrame}`);
+                        lastLoggedFrame = currentFrame;
                     }
-                });
+                }
+            });
 
                 ffmpeg.on("close", (code) => {
                     if (code === 0) resolve();

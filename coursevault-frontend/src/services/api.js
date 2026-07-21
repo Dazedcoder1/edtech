@@ -8,16 +8,19 @@ const getBaseUrl = () => {
 
 const BASE_URL = getBaseUrl();
 
-// 🚀 FIXED: Appends moduleId directly to FormData body instead of URL Query Params
-export const uploadVideoWithProgress = (moduleId, file, onProgress) => {
+// Appends moduleId directly to FormData body instead of URL Query Params
+export const uploadVideoWithProgress = (moduleId, file, title, description, onProgress) => {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const token = localStorage.getItem('token');
     const formData = new FormData();
-    
-    // Append fields directly to the form body payload
-    formData.append('video', file);
-    formData.append('moduleId', moduleId); 
+
+    // Backend's videoUpload multer config is `videoUpload.single("file")`
+    // — it only reads a field literally named "file".
+    formData.append('file', file);
+    formData.append('moduleId', moduleId);
+    formData.append('title', title || '');
+    formData.append('description', description || '');
 
     // Track real-time uploading logs
     xhr.upload.addEventListener('progress', (event) => {
@@ -45,8 +48,8 @@ export const uploadVideoWithProgress = (moduleId, file, onProgress) => {
     });
 
     xhr.addEventListener('error', () => reject(new Error('Network upload error occurred.')));
-    
-    // 🚀 Cleaned endpoint path without trailing query parameter pollution
+
+    // Cleaned endpoint path without trailing query parameter pollution
     xhr.open('POST', `${BASE_URL}/content/upload-video`);
     if (token) {
       xhr.setRequestHeader('Authorization', `Bearer ${token}`);

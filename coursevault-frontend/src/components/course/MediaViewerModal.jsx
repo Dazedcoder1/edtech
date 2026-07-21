@@ -54,7 +54,6 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
               : 'http://localhost:3000';
             
             setStreamUrl(`${backendDomain}${streamData.hlsUrl}&token=${token}`);
-            // 🌟 FIX: Turn off loading state once video stream URL maps successfully
             setLoading(false); 
           } else {
             throw new Error(streamData.message || 'Video processing is pending.');
@@ -80,7 +79,6 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           const objectUrl = URL.createObjectURL(pdfBlob);
           
           setPdfUrl(`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0`);
-          // 🌟 FIX: Turn off loading state once Blob streaming object URL mounts successfully
           setLoading(false); 
           
         } else {
@@ -90,7 +88,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
         if (!isCancelled) {
           console.error('Failed to load media:', err);
           setError(err.message || 'Failed to load content');
-          setLoading(false); // 🌟 Turn off loading on errors too
+          setLoading(false);
         }
       }
     };
@@ -189,33 +187,33 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
   const isPdf = type.includes('pdf') || type.includes('document');
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-      <div className="relative w-full max-w-5xl bg-white border-[3px] border-black rounded-[24px] shadow-[8px_8px_0px_0px_#111] overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 md:p-4 bg-black/60 backdrop-blur-sm">
+      <div className="relative w-full h-full md:h-auto max-w-5xl bg-white border-0 md:border-[3px] border-black rounded-none md:rounded-[24px] shadow-none md:shadow-[8px_8px_0px_0px_#111] overflow-hidden flex flex-col max-h-full md:max-h-[90vh]">
         
-        <div className="flex justify-between items-center p-4 border-b-[3px] border-black bg-[#A7E2D1]">
-          <h3 className="font-black text-xl tracking-tight uppercase line-clamp-1">
+        <div className="flex justify-between items-center p-3 md:p-4 border-b-2 md:border-b-[3px] border-black bg-[#A7E2D1]">
+          <h3 className="font-black text-sm md:text-xl tracking-tight uppercase line-clamp-1 pr-2">
             {content.title || 'Viewing Asset File'}
           </h3>
           <button
             onClick={onClose}
-            className="w-10 h-10 border-[3px] border-black bg-[#F26B4D] rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#111] outline-none"
+            className="flex-shrink-0 w-8 h-8 md:w-10 md:h-10 border-2 md:border-[3px] border-black bg-[#F26B4D] rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#111] outline-none"
           >
-            <X size={20} strokeWidth={3} />
+            <X size={16} strokeWidth={3} className="md:w-5 md:h-5" />
           </button>
         </div>
         
-        <div className="flex-1 bg-[#F4F4F4] relative overflow-hidden flex items-center justify-center min-h-[60vh]">
+        <div className="flex-1 bg-[#F4F4F4] relative overflow-hidden flex items-center justify-center min-h-0 md:min-h-[60vh]">
           {loading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center font-bold text-gray-500 gap-3 bg-[#F4F4F4] z-50">
-              <Loader className="animate-spin text-[#F26B4D]" size={40} strokeWidth={3} />
+            <div className="absolute inset-0 flex flex-col items-center justify-center font-bold text-gray-500 gap-3 bg-[#F4F4F4] z-50 text-sm md:text-base text-center px-4">
+              <Loader className="animate-spin text-[#F26B4D]" size={32} strokeWidth={3} />
               Mounting secure media stream...
             </div>
           )}
           
           {error && !loading && (
-            <div className="flex flex-col items-center justify-center font-bold text-red-500 gap-3 p-8 text-center">
-              <p>Failed to load content.</p>
-              <p className="text-sm font-normal text-gray-500">{error}</p>
+            <div className="flex flex-col items-center justify-center font-bold text-red-500 gap-2 md:gap-3 p-6 md:p-8 text-center">
+              <p className="text-sm md:text-base">Failed to load content.</p>
+              <p className="text-xs md:text-sm font-normal text-gray-500">{error}</p>
             </div>
           )}
           
@@ -224,7 +222,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
               ref={videoRef}
               controls
               controlsList="nodownload" 
-              className="w-full h-full max-h-[75vh] object-contain bg-black outline-none"
+              className="w-full h-full max-h-full md:max-h-[75vh] object-contain bg-black outline-none"
             />
           )}
           
@@ -233,7 +231,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
               src={pdfUrl}
               title={content.title || 'PDF Viewframe'}
               className="w-full bg-white"
-              style={{ height: '75vh', border: 'none' }}
+              style={{ height: '100%', minHeight: '60vh', border: 'none' }}
             />
           )}
         </div>
