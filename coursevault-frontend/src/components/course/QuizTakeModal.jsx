@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Trophy, Target, ArrowRight, RotateCcw } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI } from '../../services/api.js';
+import MathDisplay from '../ui/MathDisplay.jsx';
 
 export default function QuizTakeModal({ quizId, onClose }) {
   const [quiz, setQuiz] = useState(null);
@@ -10,7 +11,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
   
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [scorecard, setScorecard] = useState(null); // Tracks the final score
+  const [scorecard, setScorecard] = useState(null);
 
   useEffect(() => {
     if (quizId) {
@@ -44,7 +45,6 @@ export default function QuizTakeModal({ quizId, onClose }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    // Check if all questions are answered
     if (Object.keys(answers).length < questions.length) {
       if (!window.confirm("You haven't answered all questions. Submit anyway?")) {
         return;
@@ -58,7 +58,6 @@ export default function QuizTakeModal({ quizId, onClose }) {
         body: JSON.stringify({ answers })
       });
       
-      // Save the result to state to swap the UI to the scorecard
       setScorecard(result);
     } catch (err) {
       alert(err.message || "Failed to submit quiz");
@@ -73,11 +72,14 @@ export default function QuizTakeModal({ quizId, onClose }) {
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm font-sans">
       <div className="relative w-full max-w-3xl bg-white border-[3px] border-black rounded-2xl flex flex-col shadow-[8px_8px_0px_0px_#111] max-h-[90vh] overflow-hidden">
         
-        {/* Header */}
         <div className="flex justify-between items-center p-5 border-b-[3px] border-black bg-[#87CEFA]">
           <div>
             <h3 className="font-black text-2xl uppercase leading-none">{quiz?.title || "Loading Quiz..."}</h3>
-            {quiz?.description && <p className="text-sm font-bold mt-1 text-black/70">{quiz.description}</p>}
+            {quiz?.description && (
+              <div className="text-sm font-bold mt-1 text-black/70">
+                <MathDisplay text={quiz.description} />
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -87,21 +89,19 @@ export default function QuizTakeModal({ quizId, onClose }) {
           </button>
         </div>
 
-        {/* Loading State */}
         {isLoading && (
           <div className="p-12 text-center font-bold text-xl text-gray-500">
             Loading questions...
           </div>
         )}
 
-        {/* Quiz Taking State */}
         {!isLoading && !scorecard && (
           <form onSubmit={handleSubmit} className="overflow-y-auto p-6 md:p-8 flex flex-col gap-8 bg-[#F4F4F4]">
             {questions.map((q, index) => (
               <div key={q.id} className="bg-white border-2 border-black rounded-2xl p-6 shadow-[4px_4px_0px_0px_#111]">
                 <h4 className="font-black text-xl mb-4">
                   <span className="text-[#F26B4D] mr-2">{index + 1}.</span> 
-                  {q.question_text}
+                  <MathDisplay text={q.question_text} />
                 </h4>
                 
                 <div className="flex flex-col gap-3">
@@ -125,7 +125,9 @@ export default function QuizTakeModal({ quizId, onClose }) {
                           onChange={() => handleOptionSelect(q.id, optIndex)}
                           className="hidden"
                         />
-                        <span className="text-lg">{opt}</span>
+                        <span className="text-lg">
+                          <MathDisplay text={opt} />
+                        </span>
                       </label>
                     );
                   })}
@@ -141,11 +143,8 @@ export default function QuizTakeModal({ quizId, onClose }) {
           </form>
         )}
 
-        {/* Scorecard State */}
         {scorecard && (
           <div className="flex flex-col items-center justify-center p-12 bg-white text-center">
-            
-            {/* Dynamic Icon/Color based on score */}
             <div className={`w-32 h-32 rounded-full border-[4px] border-black flex items-center justify-center mb-6 shadow-[8px_8px_0px_0px_#111] ${
               scorecard.score >= 80 ? 'bg-[#A7E2D1]' : scorecard.score >= 50 ? 'bg-[#F9E076]' : 'bg-red-400'
             }`}>

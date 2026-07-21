@@ -5,6 +5,7 @@ import { fetchAPI } from '../../services/api.js';
 import InlineVideoPlayer from './InlineVideoPlayer.jsx';
 import QuizModal from '../educator/QuizModal.jsx';
 import QuizTakeModal from './QuizTakeModal.jsx';
+import MathDisplay from '../ui/MathDisplay.jsx'; // ← NEW IMPORT
 
 export default function CourseAccordion({
   module,
@@ -334,7 +335,9 @@ export default function CourseAccordion({
                                         <HelpCircle size={18} />
                                     </div>
                                     <div>
-                                        <h4 className="font-bold text-lg leading-none mb-1">{quiz.title}</h4>
+                                        <h4 className="font-bold text-lg leading-none mb-1">
+                                            <MathDisplay text={quiz.title} /> {/* ← ADDED MATH RENDERING */}
+                                        </h4>
                                         <p className="text-sm font-medium text-gray-500">{quiz.question_count} question{quiz.question_count === 1 ? '' : 's'}</p>
                                     </div>
                                 </div>

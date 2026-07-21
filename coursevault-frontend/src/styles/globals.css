@@ -1,4 +1,9 @@
-@import url('[https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap)');
+/* Font import */
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+/* KaTeX styles - MUST be before Tailwind */
+@import 'katex/dist/katex.min.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -51,4 +56,288 @@
 }
 .module-inner {
   overflow: hidden;
+}
+
+/* ======================================== */
+/* MATH RENDERING STYLES - IMPROVED VERSION */
+/* ======================================== */
+
+/* Math preview styles */
+.math-preview {
+  font-size: 1.2em;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  min-height: 2em;
+  display: flex;
+  align-items: center;
+  border: 1px solid #e5e7eb;
+}
+
+.math-preview .katex {
+  font-size: 1.2em;
+}
+
+.math-preview .katex .katex-html {
+  display: inline-block;
+}
+
+/* Math display in quiz questions and options */
+.math-display {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.math-display .katex {
+  font-size: 1.15em;
+  line-height: 1.5;
+}
+
+.math-display .katex-display .katex {
+  font-size: 1.4em;
+  line-height: 1.6;
+}
+
+/* For block equations (display mode) */
+.math-display-block {
+  display: block;
+  text-align: center;
+  padding: 12px 0;
+  margin: 8px 0;
+}
+
+.math-display-block .katex {
+  font-size: 1.4em;
+}
+
+/* Math input wrapper */
+.math-input-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.math-input-wrapper textarea,
+.math-input-wrapper input {
+  transition: all 0.2s ease;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.math-input-wrapper textarea:focus,
+.math-input-wrapper input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* Math content indicator */
+.math-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: #3b82f6;
+  background: #eff6ff;
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid #93c5fd;
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+/* Preview popup animation */
+@keyframes slideInFromTop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-in {
+  animation: slideInFromTop 0.3s ease-out forwards;
+}
+
+.fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Math preview popup */
+.math-preview-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: white;
+  border: 2px solid #3b82f6;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  animation: slideInFromTop 0.3s ease-out forwards;
+  min-width: 200px;
+}
+
+.math-preview-popup .preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #2563eb;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.math-preview-popup .preview-close {
+  cursor: pointer;
+  color: #9ca3af;
+  transition: color 0.2s;
+  background: none;
+  border: none;
+  font-size: 0.8rem;
+}
+
+.math-preview-popup .preview-close:hover {
+  color: #4b5563;
+}
+
+.math-preview-popup .preview-content {
+  padding: 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.math-preview-popup .preview-content .katex {
+  font-size: 1.3em;
+}
+
+.math-preview-popup .preview-raw {
+  margin-top: 6px;
+  font-size: 0.65rem;
+  color: #9ca3af;
+  font-family: 'Courier New', monospace;
+  padding: 2px 6px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+/* Math rendering in different contexts */
+.quiz-question .math-display .katex {
+  font-size: 1.3em;
+}
+
+.quiz-option .math-display .katex {
+  font-size: 1.1em;
+}
+
+/* Responsive math */
+@media (max-width: 640px) {
+  .math-display .katex {
+    font-size: 1em;
+  }
+  
+  .math-display .katex-display .katex {
+    font-size: 1.2em;
+  }
+  
+  .math-preview-popup .preview-content .katex {
+    font-size: 1.1em;
+  }
+}
+
+/* Dark mode support (if needed) */
+@media (prefers-color-scheme: dark) {
+  .math-preview {
+    background: #1f2937;
+    border-color: #374151;
+  }
+  
+  .math-preview-popup {
+    background: #1f2937;
+    border-color: #3b82f6;
+  }
+  
+  .math-preview-popup .preview-content {
+    background: #111827;
+    border-color: #374151;
+  }
+  
+  .math-preview-popup .preview-raw {
+    background: #111827;
+    color: #6b7280;
+  }
+  
+  .math-indicator {
+    background: #1e3a5f;
+    color: #60a5fa;
+    border-color: #2563eb;
+  }
+}
+
+/* Fix for KaTeX rendering in inputs */
+.katex-html {
+  display: inline-block;
+}
+
+/* Ensure equations don't overflow */
+.math-display {
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+.math-display .katex .katex-html {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+/* Selection highlight for math */
+.math-display .katex *::selection {
+  background: #fbbf24;
+  color: #000;
+}
+
+/* Scrollable math for long equations */
+.math-display .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+  max-width: 100%;
+}
+
+/* Hide scrollbar for math (keep functionality) */
+.math-display .katex-display::-webkit-scrollbar {
+  height: 4px;
+}
+
+.math-display .katex-display::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.math-display .katex-display::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+
+.math-display .katex-display::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
 }
