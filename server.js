@@ -133,6 +133,12 @@ async function setupDatabase() {
             )
         `);
 
+        // 🚀 FIX: video.js's /progress route reads/writes an is_completed column
+        // that CREATE TABLE IF NOT EXISTS never added to an already-existing
+        // table. This is what caused the "is_completed column" crash — a plain
+        // migration is required since Postgres won't add columns retroactively.
+        await pool.query(`ALTER TABLE video_progress ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE`);
+
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_modules_course_id ON modules(course_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_items_hash ON content_items(file_hash)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_courses_educator_id ON courses(educator_id)`);
@@ -150,11 +156,11 @@ setupDatabase();
 // ============================================
 // Global Middleware Configuration
 // ============================================
-// 🚀 FIX: Set parsing limits high enough to comfortably read large video metadata payloads
+// Set parsing limits high enough to comfortably read large video metadata payloads
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
-// 🚀 FIX: Harden CORS policies so modern browsers don't choke on streaming media requests
+// Harden CORS policies so modern browsers don't choke on streaming media requests
 app.use(cors({
     origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -215,7 +221,7 @@ app.get("/api/hls/serve", async (req, res) => {
         const isM3u8 = hlsPath.endsWith(".m3u8");
         const isTs = hlsPath.endsWith(".ts");
 
-        // 🚀 FIX: Apply comprehensive headers required by HTML5 engines (Hls.js / Video.js)
+        // Apply comprehensive headers required by HTML5 engines (Hls.js / Video.js)
         res.setHeader("Content-Type",
             isM3u8 ? "application/vnd.apple.mpegurl"
                 : isTs ? "video/mp2t"
