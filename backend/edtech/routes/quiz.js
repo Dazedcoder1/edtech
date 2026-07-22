@@ -6,7 +6,6 @@ const router = express.Router();
 
 // ============================================================
 // POST /api/quiz/create
-// Body: { moduleId, title, description, questions: [{ question_text, options: [...], correct_option_index }], folder_id }
 // Only the course creator (educator who owns the module's course) can create.
 // ============================================================
 router.post("/create", authMiddleware, async (req, res) => {
@@ -74,7 +73,7 @@ router.post("/create", authMiddleware, async (req, res) => {
 
 // ============================================================
 // GET /api/quiz/module/:moduleId
-// Lists quizzes for a module (title/description/question count only — no answers).
+// Lists quizzes for a module.
 // ============================================================
 router.get("/module/:moduleId", authMiddleware, async (req, res) => {
     try {
@@ -97,21 +96,19 @@ router.get("/module/:moduleId", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// GET /api/quiz/:id
-// Returns quiz + questions. Correct answers are stripped unless
-// the requester is the course creator (so students can take it blind).
+// GET /api/quiz/:quizId  <-- Changed from :id to bypass middleware trap
 // ============================================================
-router.get("/:id", authMiddleware, async (req, res) => {
+router.get("/:quizId", authMiddleware, async (req, res) => {
     try {
-        const { id } = req.params;
+        const { quizId } = req.params;
 
         const quizResult = await pool.query(`
-            SELECT q.*, c.educator_id
+            SELECT q.*, c.id AS course_id, c.educator_id
             FROM quizzes q
             JOIN modules m ON q.module_id = m.id
             JOIN courses c ON m.course_id = c.id
             WHERE q.id = $1
-        `, [id]);
+        `, [quizId]);
 
         if (quizResult.rows.length === 0) {
             return res.status(404).json({ error: "Quiz not found" });
@@ -120,10 +117,21 @@ router.get("/:id", authMiddleware, async (req, res) => {
         const quiz = quizResult.rows[0];
         const isOwner = quiz.educator_id === req.user.id;
 
+        // 🌟 SECURITY CHECK: Make sure student is enrolled
+        if (!isOwner && req.user.role === 'student') {
+            const enrollCheck = await pool.query(
+                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2`, 
+                [req.user.id, quiz.course_id]
+            );
+            if (enrollCheck.rows.length === 0) {
+                return res.status(403).json({ error: "Access denied. You must be enrolled to take this quiz." });
+            }
+        }
+
         const questionsResult = await pool.query(`
             SELECT id, question_text, options, correct_option_index
             FROM quiz_questions WHERE quiz_id = $1 ORDER BY created_at ASC
-        `, [id]);
+        `, [quizId]);
 
         const questions = questionsResult.rows.map((q) => ({
             id: q.id,
@@ -145,22 +153,42 @@ router.get("/:id", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// POST /api/quiz/:id/submit
-// Body: { answers: { [questionId]: selectedIndex } }
-// Scores the attempt server-side (so answers never leak to the client).
+// POST /api/quiz/:quizId/submit  <-- Changed from :id
 // ============================================================
-router.post("/:id/submit", authMiddleware, async (req, res) => {
+router.post("/:quizId/submit", authMiddleware, async (req, res) => {
     try {
-        const { id } = req.params;
+        const { quizId } = req.params;
         const { answers } = req.body;
 
         if (!answers || typeof answers !== "object") {
             return res.status(400).json({ error: "answers object is required" });
         }
 
+        // 🌟 ENROLLMENT CHECK FOR SUBMIT
+        const quizCheck = await pool.query(`
+            SELECT c.id AS course_id, c.educator_id 
+            FROM quizzes q
+            JOIN modules m ON q.module_id = m.id
+            JOIN courses c ON m.course_id = c.id
+            WHERE q.id = $1
+        `, [quizId]);
+
+        if (quizCheck.rows.length === 0) return res.status(404).json({ error: "Quiz not found" });
+
+        const isOwner = quizCheck.rows[0].educator_id === req.user.id;
+        if (!isOwner && req.user.role === 'student') {
+            const enrollCheck = await pool.query(
+                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2`, 
+                [req.user.id, quizCheck.rows[0].course_id]
+            );
+            if (enrollCheck.rows.length === 0) {
+                return res.status(403).json({ error: "Access denied." });
+            }
+        }
+
         const questionsResult = await pool.query(`
             SELECT id, correct_option_index FROM quiz_questions WHERE quiz_id = $1
-        `, [id]);
+        `, [quizId]);
 
         if (questionsResult.rows.length === 0) {
             return res.status(404).json({ error: "Quiz not found or has no questions" });
@@ -184,11 +212,11 @@ router.post("/:id/submit", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// DELETE /api/quiz/:id
+// DELETE /api/quiz/:quizId  <-- Changed from :id
 // ============================================================
-router.delete("/:id", authMiddleware, async (req, res) => {
+router.delete("/:quizId", authMiddleware, async (req, res) => {
     try {
-        const { id } = req.params;
+        const { quizId } = req.params;
 
         const quizCheck = await pool.query(`
             SELECT c.educator_id
@@ -196,7 +224,7 @@ router.delete("/:id", authMiddleware, async (req, res) => {
             JOIN modules m ON q.module_id = m.id
             JOIN courses c ON m.course_id = c.id
             WHERE q.id = $1
-        `, [id]);
+        `, [quizId]);
 
         if (quizCheck.rows.length === 0) {
             return res.status(404).json({ error: "Quiz not found" });
@@ -205,7 +233,7 @@ router.delete("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only the course creator can delete this quiz" });
         }
 
-        await pool.query(`DELETE FROM quizzes WHERE id = $1`, [id]);
+        await pool.query(`DELETE FROM quizzes WHERE id = $1`, [quizId]);
         res.json({ success: true, message: "Quiz deleted" });
     } catch (err) {
         console.error("Quiz delete error:", err);
