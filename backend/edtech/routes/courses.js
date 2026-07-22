@@ -7,15 +7,47 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // GET /api/courses
+
 router.get("/", async (req, res) => {
     try {
-        const result = await pool.query(`
+        let userId = null;
+        let userRole = null;
+        
+        // 1. Peek at the token to see who is asking (Student or Educator)
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith("Bearer ")) {
+            try {
+                const token = authHeader.split(" ")[1];
+                const decoded = jwt.verify(token, JWT_SECRET);
+                userId = decoded.id;
+                userRole = decoded.role;
+            } catch (err) {}
+        }
+
+        // 2. Base query
+        let query = `
             SELECT c.*, u.name as educator_name
             FROM courses c
             JOIN users u ON c.educator_id = u.id
             WHERE c.is_active = true AND c.deleted_at IS NULL
-            ORDER BY c.created_at DESC
-        `);
+        `;
+        const params = [];
+
+        // 3. Apply strict security filters based on role
+        if (userRole === "admin") {
+            // Admins see everything
+        } else if (userRole === "educator" && userId) {
+            // Educators see ALL published courses + ONLY their own drafts
+            query += ` AND (c.status = 'published' OR c.educator_id = $1)`;
+            params.push(userId);
+        } else {
+            // 🌟 STUDENTS AND GUESTS ONLY SEE PUBLISHED COURSES
+            query += ` AND c.status = 'published'`;
+        }
+
+        query += ` ORDER BY c.created_at DESC`;
+
+        const result = await pool.query(query, params);
         res.json({ success: true, courses: result.rows });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
