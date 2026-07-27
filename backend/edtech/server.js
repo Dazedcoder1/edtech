@@ -14,7 +14,9 @@ import paymentRoutes from "./routes/payments.js";
 import enrollmentRoutes from "./routes/enrollments.js";
 import videoRoutes from "./routes/video.js";
 import analyticsRoutes from "./routes/analytics.js";
-import quizRoutes from "./routes/quiz.js";
+import quizRoutes from "./routes/quiz.js";        // ✅ Quiz routes
+import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
+
 // Import config
 import pool from "./config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "./config/r2.js";
@@ -135,6 +137,9 @@ async function setupDatabase() {
             )
         `);
 
+        // ============================================
+        // QUIZ TABLES
+        // ============================================
         await pool.query(`
             CREATE TABLE IF NOT EXISTS quizzes (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -142,6 +147,8 @@ async function setupDatabase() {
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
                 created_by UUID REFERENCES users(id),
+                folder_id UUID DEFAULT NULL,
+                time_limit INT DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -158,6 +165,62 @@ async function setupDatabase() {
             )
         `);
 
+        // ============================================
+        // QUIZ ATTEMPT TABLES
+        // ============================================
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS quiz_attempts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                quiz_id UUID NOT NULL REFERENCES quizzes(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                score DECIMAL(5,2) DEFAULT 0,
+                total_questions INT DEFAULT 0,
+                correct_answers INT DEFAULT 0,
+                answers JSONB DEFAULT '{}',
+                time_taken INT DEFAULT 0,
+                status VARCHAR(50) DEFAULT 'completed',
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(quiz_id, user_id)
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS quiz_answers (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                attempt_id UUID NOT NULL REFERENCES quiz_attempts(id) ON DELETE CASCADE,
+                question_id UUID NOT NULL REFERENCES quiz_questions(id) ON DELETE CASCADE,
+                selected_option INT,
+                is_correct BOOLEAN DEFAULT FALSE,
+                answered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(attempt_id, question_id)
+            )
+        `);
+
+        // ============================================
+        // TEST FILES TABLE
+        // ============================================
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS test_files (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                module_id UUID REFERENCES modules(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                file_name VARCHAR(512) NOT NULL,
+                file_size_bytes BIGINT,
+                r2_key VARCHAR(1024) NOT NULL,
+                folder_id UUID DEFAULT NULL,
+                status VARCHAR(50) DEFAULT 'ready',
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        `);
+
+        // ============================================
+        // INDEXES
+        // ============================================
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_modules_course_id ON modules(course_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_content_items_hash ON content_items(file_hash)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_courses_educator_id ON courses(educator_id)`);
@@ -165,6 +228,10 @@ async function setupDatabase() {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_video_progress_user_content ON video_progress(user_id, content_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_quizzes_module_id ON quizzes(module_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_questions_quiz_id ON quiz_questions(quiz_id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_attempts_quiz_id ON quiz_attempts(quiz_id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id ON quiz_attempts(user_id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_answers_attempt_id ON quiz_answers(attempt_id)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_test_files_module_id ON test_files(module_id)`);
 
         console.log("✅ Database schema ready");
     } catch (err) {
@@ -175,12 +242,11 @@ async function setupDatabase() {
 setupDatabase();
 
 // ============================================
-// ⭐ FIXED CORS Middleware (NO app.options('*'))
+// CORS Middleware
 // ============================================
 app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
-// Enable CORS with proper settings
 const corsOptions = {
     origin: ['http://localhost:5173', 'http://localhost:3000', 'https://sv.gridsphere.in', 'http://localhost:5174'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -213,7 +279,8 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/enrollments", enrollmentRoutes);
 app.use("/api/video", videoRoutes);
 app.use("/api/analytics", analyticsRoutes);
-app.use("/api/quiz", quizRoutes);
+app.use("/api/quiz", quizRoutes);      // ✅ Quiz routes
+app.use("/api/test", testRoutes);      // ✅ Test routes (NEW)
 
 // ============================================
 // HLS Proxy Route
@@ -340,5 +407,6 @@ app.listen(PORT, () => {
     console.log(`   - /api/video`);
     console.log(`   - /api/analytics`);
     console.log(`   - /api/quiz`);
+    console.log(`   - /api/test`);  // ✅ Added test route
     console.log(`${"=".repeat(70)}\n`);
 });
