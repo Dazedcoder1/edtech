@@ -34,11 +34,22 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
 
       <div className="relative bg-white border border-black shadow-[2px_2px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] rounded-xl overflow-hidden z-10 flex flex-col h-auto md:h-[480px] transition-transform duration-300 md:group-hover:translate-x-1 md:group-hover:-translate-y-1">
         
+        {/* 🌟 UPGRADED: Renders Thumbnail Image if available, otherwise falls back to colored banner */}
         <div className={`h-[120px] md:h-[200px] w-full border-b border-black ${bgColor} flex items-center justify-center relative overflow-hidden`}>
-          <BookOpen size={28} className="md:hidden text-black/20" />
-          <BookOpen size={48} className="hidden md:block text-black/20" />
+          {course.thumbnail_url ? (
+            <img 
+              src={course.thumbnail_url} 
+              alt={course.title} 
+              className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" 
+            />
+          ) : (
+            <>
+              <BookOpen size={28} className="md:hidden text-black/20" />
+              <BookOpen size={48} className="hidden md:block text-black/20" />
+            </>
+          )}
           
-          <div className="absolute top-3 right-3 md:top-4 md:right-4 bg-white border border-black rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-[10px] md:text-xs font-bold shadow-[2px_2px_0px_0px_#111] flex items-center gap-1">
+          <div className="absolute top-3 right-3 md:top-4 md:right-4 bg-white border border-black rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-[10px] md:text-xs font-bold shadow-[2px_2px_0px_0px_#111] flex items-center gap-1 z-10">
             {isMyLearning ? (
               `${course.progress || 0}% Done`
             ) : isPaid ? (
@@ -51,7 +62,7 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
             )}
           </div>
 
-          <div className="absolute top-3 left-3 md:top-4 md:left-4 bg-black text-white px-2.5 py-0.5 md:px-3 md:py-1 rounded-full text-[9px] md:text-[10px] font-bold uppercase tracking-wider">
+          <div className="absolute top-3 left-3 md:top-4 md:left-4 bg-black text-white px-2.5 py-0.5 md:px-3 md:py-1 rounded-full text-[9px] md:text-[10px] font-bold uppercase tracking-wider z-10">
             {course.status || 'published'}
           </div>
         </div>
@@ -62,13 +73,13 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
           </div>
           <h3 className="text-sm md:text-2xl font-bold leading-tight mb-0.5 md:mb-2 pr-2 line-clamp-2">{course.title}</h3>
           <p className="flex items-center gap-1.5 text-gray-600 font-bold text-[11px] md:text-sm mb-2 md:mb-4">
-  <span className="inline-flex items-center justify-center w-5 h-5 md:w-6 md:h-6 rounded-full bg-[#F9E076] border border-black text-[10px] md:text-xs">
-    🧑‍🏫
-  </span>
-  {course.educator_name && course.educator_name.toLowerCase() !== 'anon' 
-    ? `Taught by ${course.educator_name}` 
-    : 'Taught by Shardha Vidyapeeth'}
-</p>
+            <span className="inline-flex items-center justify-center w-5 h-5 md:w-6 md:h-6 rounded-full bg-[#F9E076] border border-black text-[10px] md:text-xs">
+              🧑‍🏫
+            </span>
+            {course.educator_name && course.educator_name.toLowerCase() !== 'anon' 
+              ? `Taught by ${course.educator_name}` 
+              : 'Taught by Shardha Vidyapeeth'}
+          </p>
 
           <div className="mt-auto flex justify-end items-end">
             <button

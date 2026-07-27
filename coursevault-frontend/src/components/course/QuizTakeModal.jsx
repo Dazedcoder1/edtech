@@ -104,6 +104,17 @@ export default function QuizTakeModal({ quizId, onClose }) {
                   <span className="text-[#F26B4D] mr-1.5 md:mr-2">{index + 1}.</span> 
                   <MathDisplay text={q.question_text} />
                 </h4>
+
+                {/* 🌟 UPGRADED: Neo-Brutalist Diagram Box for Student View */}
+                {q.image_url && (
+                  <div className="my-3 md:my-5 border-2 border-black rounded-xl overflow-hidden bg-white max-h-64 flex items-center justify-center p-2 shadow-[2px_2px_0px_0px_#000]">
+                    <img 
+                      src={q.image_url} 
+                      alt={`Diagram for Question ${index + 1}`} 
+                      className="max-h-60 w-auto object-contain" 
+                    />
+                  </div>
+                )}
                 
                 <div className="flex flex-col gap-2 md:gap-3">
                   {q.options.map((opt, optIndex) => {
