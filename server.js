@@ -7,6 +7,7 @@ import fs from "fs";
 
 // Import routes
 import authRoutes from "./routes/auth.js";
+import testRoutes from "./routes/test.js";
 import courseRoutes from "./routes/courses.js";
 import moduleRoutes from "./routes/modules.js";
 import contentRoutes from "./routes/content.js";
@@ -173,6 +174,7 @@ app.use(cors({
 // ============================================
 app.use("/api/auth", authRoutes);
 app.use("/api/courses", courseRoutes);
+app.use("/api/test", testRoutes);
 app.use("/api/modules", moduleRoutes);
 app.use("/api/content", contentRoutes);
 app.use("/api/payments", paymentRoutes);

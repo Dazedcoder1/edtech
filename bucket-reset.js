@@ -1,62 +1,49 @@
-// clear-r2.js
-import { S3Client, ListObjectsV2Command, DeleteObjectCommand } from "@aws-sdk/client-s3";
-import "dotenv/config";
+// edtech/migrate-test-tables.js
+import pool from "./config/database.js";
 
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
-const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
+async function migrateTestTables() {
+    try {
+        console.log("📦 Creating test tables...");
 
-const r2Client = new S3Client({
-    region: "auto",
-    endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-        accessKeyId: R2_ACCESS_KEY_ID,
-        secretAccessKey: R2_SECRET_ACCESS_KEY,
-    },
-    forcePathStyle: true,
-});
+        // Test files table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS test_files (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                module_id UUID REFERENCES modules(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                file_name VARCHAR(512) NOT NULL,
+                file_size_bytes BIGINT,
+                r2_key VARCHAR(1024) NOT NULL,
+                status VARCHAR(50) DEFAULT 'ready',
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        `);
 
-async function clearR2Bucket() {
-    console.log(`\n🗑️ Starting to clear bucket: ${R2_BUCKET_NAME}`);
-    console.log(`⚠️ This will delete ALL files in the bucket!\n`);
-    
-    let continuationToken = undefined;
-    let totalDeleted = 0;
-    
-    do {
-        // List objects
-        const listCommand = new ListObjectsV2Command({
-            Bucket: R2_BUCKET_NAME,
-            ContinuationToken: continuationToken,
-            MaxKeys: 1000,
-        });
-        
-        const listedObjects = await r2Client.send(listCommand);
-        
-        if (!listedObjects.Contents || listedObjects.Contents.length === 0) {
-            console.log(`✅ Bucket is already empty!`);
-            break;
-        }
-        
-        // Delete objects in batches
-        const deletePromises = listedObjects.Contents.map(async (obj) => {
-            const deleteCommand = new DeleteObjectCommand({
-                Bucket: R2_BUCKET_NAME,
-                Key: obj.Key,
-            });
-            await r2Client.send(deleteCommand);
-            console.log(`  🗑️ Deleted: ${obj.Key}`);
-            totalDeleted++;
-        });
-        
-        await Promise.all(deletePromises);
-        
-        continuationToken = listedObjects.NextContinuationToken;
-        
-    } while (continuationToken);
-    
-    console.log(`\n✅ Done! Deleted ${totalDeleted} files from bucket: ${R2_BUCKET_NAME}`);
+        // Add indexes
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_test_files_module_id ON test_files(module_id);
+        `);
+
+        // Add time_limit column to quizzes if not exists
+        try {
+            await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS time_limit INT DEFAULT NULL`);
+        } catch (e) {}
+
+        // Add folder_id to quizzes if not exists
+        try {
+            await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS folder_id UUID DEFAULT NULL`);
+        } catch (e) {}
+
+        console.log("✅ Test tables created successfully!");
+    } catch (err) {
+        console.error("❌ Migration error:", err);
+    } finally {
+        await pool.end();
+    }
 }
 
-clearR2Bucket().catch(console.error);
+migrateTestTables();
