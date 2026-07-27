@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, UploadCloud, Image as ImageIcon, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
 import { fetchAPI } from '../../services/api';
 
@@ -8,7 +8,9 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState(0);
   const [status, setStatus] = useState('draft');
+  const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
 
   useEffect(() => {
     if (course) {
@@ -16,28 +18,69 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setDescription(course.description || '');
       setPrice(course.price || 0);
       setStatus(course.status || 'draft');
+      setThumbnailUrl(course.thumbnail_url || '');
     } else {
       setTitle('');
       setDescription('');
       setPrice(0);
       setStatus('draft');
+      setThumbnailUrl('');
     }
   }, [course, isOpen]);
 
   if (!isOpen) return null;
 
-  // Dynamic header: editing an existing course, adding a sub-course under
-  // a parent row, or creating a brand new top-level course.
   const modalHeading = course ? 'Edit Course' : parentCourseId ? 'Add Course' : 'Create Course';
   const submitLabel = course ? 'Save Course' : parentCourseId ? 'Save Course' : 'Save Course';
+
+  // 🌟 Handle Thumbnail Upload to R2
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      return alert('Please select a valid image file (PNG, JPG, WEBP).');
+    }
+
+    setIsUploadingImage(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/content/upload-image?folder=thumbnails`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Upload failed');
+      }
+
+      const data = await response.json();
+      setThumbnailUrl(data.imageUrl);
+    } catch (err) {
+      alert(err.message || 'Failed to upload image');
+    } finally {
+      setIsUploadingImage(false);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-    const data = { title, description, price: parseFloat(price), status };
+    const data = { 
+      title, 
+      description, 
+      price: parseFloat(price), 
+      status,
+      thumbnail_url: thumbnailUrl 
+    };
 
-    // Only attach parent_course_id when creating a brand-new sub-course.
-    // No validation happens here or on the backend — it's simply stored.
     if (!course && parentCourseId) {
       data.parent_course_id = parentCourseId;
     }
@@ -59,23 +102,64 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div className="relative w-full max-w-lg bg-[#F4DFD8] border-[3px] border-black rounded-2xl flex flex-col shadow-[8px_8px_0px_0px_#111]">
-        <div className="flex justify-between items-center p-4 border-b-[3px] border-black bg-white rounded-t-xl">
+      <div className="relative w-full max-w-lg bg-[#F4DFD8] border-[3px] border-black rounded-2xl flex flex-col shadow-[8px_8px_0px_0px_#111] max-h-[90vh] overflow-hidden">
+        <div className="flex justify-between items-center p-4 border-b-[3px] border-black bg-white rounded-t-xl shrink-0">
           <h3 className="font-bold text-xl">{modalHeading}</h3>
           <button onClick={onClose} className="w-8 h-8 border-[3px] border-black bg-[#F26B4D] rounded-full flex items-center justify-center font-bold hover:scale-110">
             <X size={16} strokeWidth={3} />
           </button>
         </div>
         
-        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-4 bg-white rounded-b-xl">
+        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-4 bg-white rounded-b-xl overflow-y-auto">
           <div>
             <label className="font-bold text-sm ml-1 mb-1 block">Course Title</label>
             <input required value={title} onChange={e => setTitle(e.target.value)} className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]" />
           </div>
+
           <div>
             <label className="font-bold text-sm ml-1 mb-1 block">Description</label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3} className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]" />
+            <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]" />
           </div>
+
+          {/* 🌟 Neo-Brutalist Thumbnail Uploader */}
+          <div>
+            <label className="font-bold text-sm ml-1 mb-1 block">Course Thumbnail</label>
+            {thumbnailUrl ? (
+              <div className="relative border-2 border-black rounded-xl overflow-hidden group bg-gray-100 h-40 flex items-center justify-center shadow-[4px_4px_0px_0px_#111]">
+                <img src={thumbnailUrl} alt="Thumbnail preview" className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setThumbnailUrl('')}
+                  className="absolute top-2 right-2 bg-red-400 border-2 border-black p-1.5 rounded-lg text-black hover:bg-red-500 hover:scale-105 transition-all shadow-[2px_2px_0px_0px_#000]"
+                  title="Remove image"
+                >
+                  <Trash2 size={16} strokeWidth={3} />
+                </button>
+              </div>
+            ) : (
+              <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-black border-dashed rounded-xl cursor-pointer bg-[#F4F4F4] hover:bg-gray-100 transition-colors relative">
+                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                  {isUploadingImage ? (
+                    <div className="font-black text-sm text-[#F26B4D] animate-pulse">Uploading to R2 Cloud...</div>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-8 h-8 mb-2 text-gray-500" />
+                      <p className="mb-1 text-sm font-bold text-black">Click to upload thumbnail</p>
+                      <p className="text-xs text-gray-500 font-medium">PNG, JPG or WEBP (Max 5MB)</p>
+                    </>
+                  )}
+                </div>
+                <input 
+                  type="file" 
+                  className="hidden" 
+                  accept="image/*"
+                  disabled={isUploadingImage}
+                  onChange={handleImageUpload} 
+                />
+              </label>
+            )}
+          </div>
+
           <div className="flex gap-4">
             <div className="flex-1">
               <label className="font-bold text-sm ml-1 mb-1 block">Price (₹)</label>
@@ -89,9 +173,10 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
               </select>
             </div>
           </div>
-          <div className="flex justify-end gap-3 mt-4">
+
+          <div className="flex justify-end gap-3 mt-2">
             <button type="button" onClick={onClose} className="px-6 py-2 border-[3px] border-black rounded-xl font-bold hover:bg-gray-100 transition-colors">Cancel</button>
-            <Button type="submit" variant="primary" className="py-2" disabled={isSubmitting}>
+            <Button type="submit" variant="primary" className="py-2" disabled={isSubmitting || isUploadingImage}>
               {isSubmitting ? 'Saving...' : submitLabel}
             </Button>
           </div>
