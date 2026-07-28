@@ -1,8 +1,35 @@
-import React, { useState, useEffect } from 'react';
-import { X, Trophy, Target, ArrowRight, RotateCcw } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Trophy, Target, ArrowRight, RotateCcw, Award, TrendingUp, ListChecks, Clock } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI } from '../../services/api.js';
 import MathDisplay from '../ui/MathDisplay.jsx';
+
+// Formats seconds into "Xh Ym Zs" / "Ym Zs" / "Zs" -- drops leading
+// zero units so a 40s quiz still just shows "40s", not "0h 0m 40s".
+function formatTimeTaken(totalSeconds) {
+  if (totalSeconds === undefined || totalSeconds === null) return '--';
+  const safeSeconds = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+// Small neo-brutalist stat box used in the "Your Progress" grid
+function StatBox({ icon, label, value, sub, className = '' }) {
+  return (
+    <div className={`bg-white border-2 border-black rounded-xl p-3 md:p-4 shadow-[2px_2px_0px_0px_#111] flex flex-col gap-1 ${className}`}>
+      <div className="flex items-center gap-1.5 text-gray-500 font-bold text-[10px] md:text-xs uppercase">
+        {icon} {label}
+      </div>
+      <div className="font-black text-xl md:text-3xl">{value}</div>
+      {sub && <div className="text-[10px] md:text-xs font-bold text-gray-400">{sub}</div>}
+    </div>
+  );
+}
 
 export default function QuizTakeModal({ quizId, onClose }) {
   const [quiz, setQuiz] = useState(null);
@@ -12,6 +39,11 @@ export default function QuizTakeModal({ quizId, onClose }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scorecard, setScorecard] = useState(null);
+
+  // 🌟 Real open -> submit timer. Set the instant the quiz's questions
+  // are actually on screen (not when the request merely fires), so the
+  // measured time matches what the student experiences.
+  const startTimeRef = useRef(null);
 
   useEffect(() => {
     if (quizId) {
@@ -27,6 +59,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
       setQuestions(data.questions || []);
       setAnswers({});
       setScorecard(null);
+      startTimeRef.current = Date.now();
     } catch (err) {
       alert(err.message || "Failed to load quiz");
       onClose();
@@ -51,11 +84,16 @@ export default function QuizTakeModal({ quizId, onClose }) {
       }
     }
 
+    // Elapsed seconds from the moment the quiz opened to right now.
+    const clientTimeTakenSeconds = startTimeRef.current
+      ? Math.max(0, Math.round((Date.now() - startTimeRef.current) / 1000))
+      : undefined;
+
     setIsSubmitting(true);
     try {
       const result = await fetchAPI(`/quiz/${quizId}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ answers })
+        body: JSON.stringify({ answers, clientTimeTakenSeconds })
       });
       
       setScorecard(result);
@@ -105,7 +143,6 @@ export default function QuizTakeModal({ quizId, onClose }) {
                   <MathDisplay text={q.question_text} />
                 </h4>
 
-                {/* 🌟 UPGRADED: Neo-Brutalist Diagram Box for Student View */}
                 {q.image_url && (
                   <div className="my-3 md:my-5 border-2 border-black rounded-xl overflow-hidden bg-white max-h-64 flex items-center justify-center p-2 shadow-[2px_2px_0px_0px_#000]">
                     <img 
@@ -156,34 +193,72 @@ export default function QuizTakeModal({ quizId, onClose }) {
         )}
 
         {scorecard && (
-          <div className="flex flex-col items-center justify-center p-6 md:p-12 bg-white text-center overflow-y-auto">
-            
-            <div className={`w-20 h-20 md:w-32 md:h-32 rounded-full border-[3px] md:border-[4px] border-black flex items-center justify-center mb-4 md:mb-6 shadow-[4px_4px_0px_0px_#111] md:shadow-[8px_8px_0px_0px_#111] ${
-              scorecard.score >= 80 ? 'bg-[#A7E2D1]' : scorecard.score >= 50 ? 'bg-[#F9E076]' : 'bg-red-400'
-            }`}>
-              {scorecard.score >= 80 ? <Trophy size={36} strokeWidth={2} className="md:w-16 md:h-16" /> : <Target size={36} strokeWidth={2} className="md:w-16 md:h-16" />}
+          <div className="flex flex-col p-4 md:p-8 bg-[#F4F4F4] text-center overflow-y-auto gap-5 md:gap-6">
+
+            <div className="bg-white border-2 md:border-[3px] border-black rounded-xl md:rounded-2xl p-5 md:p-10 flex flex-col items-center shadow-[4px_4px_0px_0px_#111] md:shadow-[8px_8px_0px_0px_#111]">
+              <div className={`w-16 h-16 md:w-28 md:h-28 rounded-full border-[3px] md:border-[4px] border-black flex items-center justify-center mb-3 md:mb-5 shadow-[4px_4px_0px_0px_#111] md:shadow-[6px_6px_0px_0px_#111] ${
+                scorecard.score >= 80 ? 'bg-[#A7E2D1]' : scorecard.score >= 50 ? 'bg-[#F9E076]' : 'bg-red-400'
+              }`}>
+                {scorecard.score >= 80 ? <Trophy size={30} strokeWidth={2} className="md:w-14 md:h-14" /> : <Target size={30} strokeWidth={2} className="md:w-14 md:h-14" />}
+              </div>
+
+              <h2 className="text-2xl md:text-5xl font-black mb-1.5 md:mb-2">{scorecard.score}%</h2>
+
+              <p className="text-sm md:text-xl font-bold text-gray-600 mb-4 md:mb-7">
+                You got <span className="text-black bg-[#F4DFD8] px-1.5 py-0.5 md:px-2 md:py-1 rounded border-2 border-black inline-block">{scorecard.correct}</span> out of <span className="text-black bg-[#F4DFD8] px-1.5 py-0.5 md:px-2 md:py-1 rounded border-2 border-black inline-block">{scorecard.total}</span> correct!
+              </p>
+
+              <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                <button 
+                  onClick={() => setScorecard(null)} 
+                  className="flex items-center justify-center gap-2 px-5 md:px-6 py-2.5 md:py-3 bg-white border-2 md:border-[3px] border-black rounded-xl font-bold text-sm md:text-lg hover:bg-gray-100 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all"
+                >
+                  <RotateCcw size={16} strokeWidth={3} className="md:w-5 md:h-5" /> Retake Quiz
+                </button>
+                <button 
+                  onClick={onClose} 
+                  className="px-6 md:px-8 py-2.5 md:py-3 bg-[#87CEFA] border-2 md:border-[3px] border-black rounded-xl font-bold text-sm md:text-lg shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all"
+                >
+                  Done
+                </button>
+              </div>
             </div>
 
-            <h2 className="text-3xl md:text-6xl font-black mb-2">{scorecard.score}%</h2>
-            
-            <p className="text-base md:text-2xl font-bold text-gray-600 mb-5 md:mb-8">
-              You got <span className="text-black bg-[#F4DFD8] px-1.5 py-0.5 md:px-2 md:py-1 rounded border-2 border-black inline-block">{scorecard.correct}</span> out of <span className="text-black bg-[#F4DFD8] px-1.5 py-0.5 md:px-2 md:py-1 rounded border-2 border-black inline-block">{scorecard.total}</span> correct!
-            </p>
-
-            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-              <button 
-                onClick={() => setScorecard(null)} 
-                className="flex items-center justify-center gap-2 px-5 md:px-6 py-2.5 md:py-3 bg-white border-2 md:border-[3px] border-black rounded-xl font-bold text-sm md:text-lg hover:bg-gray-100 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all"
-              >
-                <RotateCcw size={16} strokeWidth={3} className="md:w-5 md:h-5" /> Retake Quiz
-              </button>
-              <button 
-                onClick={onClose} 
-                className="px-6 md:px-8 py-2.5 md:py-3 bg-[#87CEFA] border-2 md:border-[3px] border-black rounded-xl font-bold text-sm md:text-lg shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all"
-              >
-                Done
-              </button>
-            </div>
+            {scorecard.stats && (
+              <div className="text-left">
+                <h3 className="font-black text-base md:text-xl uppercase mb-2.5 md:mb-4">Your Progress</h3>
+                <div className="grid grid-cols-2 gap-2.5 md:gap-4">
+                  <StatBox
+                    icon={<Award size={12} strokeWidth={2.5} className="md:w-[14px] md:h-[14px]" />}
+                    label="Rank"
+                    value={`#${scorecard.stats.rank}`}
+                    sub={`out of ${scorecard.stats.totalAttempts}`}
+                  />
+                  <StatBox
+                    icon={<Target size={12} strokeWidth={2.5} className="md:w-[14px] md:h-[14px]" />}
+                    label="Accuracy"
+                    value={`${scorecard.stats.accuracy}%`}
+                  />
+                  <StatBox
+                    icon={<TrendingUp size={12} strokeWidth={2.5} className="md:w-[14px] md:h-[14px]" />}
+                    label="Percentile"
+                    value={scorecard.stats.percentile}
+                  />
+                  <StatBox
+                    icon={<ListChecks size={12} strokeWidth={2.5} className="md:w-[14px] md:h-[14px]" />}
+                    label="Attempt %"
+                    value={`${scorecard.stats.attemptPercent}%`}
+                    sub={`${scorecard.stats.attemptedQuizzes}/${scorecard.stats.totalQuizzes} quizzes`}
+                  />
+                  <StatBox
+                    icon={<Clock size={12} strokeWidth={2.5} className="md:w-[14px] md:h-[14px]" />}
+                    label="Time Taken"
+                    value={formatTimeTaken(scorecard.stats.timeTakenSeconds)}
+                    className="col-span-2"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

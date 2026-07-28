@@ -96,8 +96,6 @@ async function getOrRestartAttempt(client, quizId, userId) {
         return result.rows[0].id;
     }
 
-    // Row already existed and was already 'in_progress' (WHERE clause skipped
-    // the update) -- just fetch its id.
     const existing = await client.query(`
         SELECT id FROM quiz_attempts WHERE quiz_id = $1 AND user_id = $2
     `, [quizId, userId]);
@@ -200,21 +198,55 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
 
 // ============================================================
 // SUBMIT QUIZ (finalize)
-// 🌟 FIXED: uses getOrRestartAttempt so it always reuses the single
-// (quiz_id, user_id) row instead of trying to INSERT a duplicate one --
-// this is what was causing the "duplicate key value violates unique
-// constraint quiz_attempts_quiz_id_user_id_key" error.
+// 🌟 UPDATED: now also returns `stats` -- rank, percentile, accuracy,
+// attempt % (across the course's quizzes), and time taken -- all scoped
+// to students enrolled in this quiz's course, based on this quiz's score.
+//
+// 🌟 TIME-TAKEN FIX: `quiz_attempts.started_at` only ever gets set the
+// moment this route (or /answer, which the frontend doesn't call) upserts
+// the attempt row -- so DB-based `completed_at - started_at` was always
+// ~0s (the row didn't exist while the student was actually answering).
+// Frontend now tracks real open->submit time on the client and sends it
+// as `clientTimeTakenSeconds`. We trust that value when it's present and
+// sane, and only fall back to the DB timestamps if it's missing/invalid.
 // ============================================================
 router.post("/:quizId/submit", authMiddleware, async (req, res) => {
     const client = await pool.connect();
     try {
         const { quizId } = req.params;
         const userId = req.user.id;
-        const { answers } = req.body;
+        const { answers, clientTimeTakenSeconds } = req.body;
 
         if (!answers || typeof answers !== "object") {
             client.release();
             return res.status(400).json({ error: "answers object is required" });
+        }
+
+        const quizMeta = await client.query(`
+            SELECT m.course_id, c.educator_id
+            FROM quizzes q
+            JOIN modules m ON q.module_id = m.id
+            JOIN courses c ON m.course_id = c.id
+            WHERE q.id = $1
+        `, [quizId]);
+
+        if (quizMeta.rows.length === 0) {
+            client.release();
+            return res.status(404).json({ error: "Quiz not found" });
+        }
+
+        const courseId = quizMeta.rows[0].course_id;
+        const isOwner = quizMeta.rows[0].educator_id === userId;
+
+        if (!isOwner) {
+            const enrollCheck = await client.query(
+                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                [userId, courseId]
+            );
+            if (enrollCheck.rows.length === 0) {
+                client.release();
+                return res.status(403).json({ error: "Access denied. You must be enrolled." });
+            }
         }
 
         await client.query("BEGIN");
@@ -247,10 +279,12 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
         const totalsResult = await client.query(`
             SELECT
                 (SELECT COUNT(*) FROM quiz_answers WHERE attempt_id = $1 AND is_correct = true) AS correct_answers,
+                (SELECT COUNT(*) FROM quiz_answers WHERE attempt_id = $1) AS answered_count,
                 (SELECT COUNT(*) FROM quiz_questions WHERE quiz_id = $2) AS total_questions
         `, [attemptId, quizId]);
 
         const correctAnswers = Number(totalsResult.rows[0].correct_answers);
+        const answeredCount = Number(totalsResult.rows[0].answered_count);
         const totalQuestions = Number(totalsResult.rows[0].total_questions);
         const score = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
@@ -268,12 +302,80 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
 
         await client.query("COMMIT");
 
+        // ================================================================
+        // STATS (computed after commit, so this attempt is included below)
+        // ================================================================
+
+        // Time taken for this attempt.
+        // Prefer the client-measured open->submit duration (accurate);
+        // fall back to the DB timestamp diff only if the client didn't
+        // send a valid number (e.g. older app build).
+        let timeTakenSeconds;
+        const parsedClientTime = Number(clientTimeTakenSeconds);
+        if (Number.isFinite(parsedClientTime) && parsedClientTime >= 0) {
+            timeTakenSeconds = Math.round(parsedClientTime);
+        } else {
+            const timingResult = await pool.query(`
+                SELECT started_at, completed_at FROM quiz_attempts WHERE id = $1
+            `, [attemptId]);
+            const { started_at, completed_at } = timingResult.rows[0];
+            timeTakenSeconds = Math.max(
+                0,
+                Math.round((new Date(completed_at).getTime() - new Date(started_at).getTime()) / 1000)
+            );
+        }
+
+        // Accuracy -- of the questions actually answered, how many were right
+        const accuracy = answeredCount > 0 ? Math.round((correctAnswers / answeredCount) * 100) : 0;
+
+        // Rank + Percentile -- among enrolled students of this course who
+        // have completed THIS quiz, ranked by score.
+        const peerScoresResult = await pool.query(`
+            SELECT qa.score
+            FROM quiz_attempts qa
+            JOIN enrollments e ON e.user_id = qa.user_id AND e.course_id = $1 AND e.status = 'active'
+            WHERE qa.quiz_id = $2 AND qa.status = 'completed'
+        `, [courseId, quizId]);
+
+        const peerScores = peerScoresResult.rows.map(r => Number(r.score));
+        const totalAttempts = peerScores.length;
+        const scoredHigher = peerScores.filter(s => s > score).length;
+        const scoredLower = peerScores.filter(s => s < score).length;
+        const rank = scoredHigher + 1;
+        const percentile = totalAttempts > 1
+            ? Math.round((scoredLower / (totalAttempts - 1)) * 100)
+            : 100;
+
+        // Attempt % -- of all quizzes in this course, how many has this
+        // student completed (including this one, just committed).
+        const quizCountsResult = await pool.query(`
+            SELECT
+                (SELECT COUNT(*) FROM quizzes q JOIN modules m ON q.module_id = m.id WHERE m.course_id = $1)::int AS total_quizzes,
+                (SELECT COUNT(DISTINCT qa.quiz_id) FROM quiz_attempts qa
+                    JOIN quizzes q ON qa.quiz_id = q.id
+                    JOIN modules m ON q.module_id = m.id
+                 WHERE m.course_id = $1 AND qa.user_id = $2 AND qa.status = 'completed')::int AS attempted_quizzes
+        `, [courseId, userId]);
+
+        const { total_quizzes: totalQuizzes, attempted_quizzes: attemptedQuizzes } = quizCountsResult.rows[0];
+        const attemptPercent = totalQuizzes > 0 ? Math.round((attemptedQuizzes / totalQuizzes) * 100) : 0;
+
         res.json({
             success: true,
             attemptId,
             total: totalQuestions,
             correct: correctAnswers,
-            score
+            score,
+            stats: {
+                rank,
+                totalAttempts,
+                percentile,
+                accuracy,
+                attemptPercent,
+                attemptedQuizzes,
+                totalQuizzes,
+                timeTakenSeconds
+            }
         });
 
     } catch (err) {
