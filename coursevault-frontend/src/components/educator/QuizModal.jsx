@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, Image as ImageIcon } from 'lucide-react';
+import { X, Plus, Trash2, Image as ImageIcon, FileText } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI } from '../../services/api.js';
 import MathInput from '../ui/MathInput.jsx';
+import DocxImportPanel from './DocxImportPanel.jsx';
 
 const emptyQuestion = () => ({
   question_text: '',
@@ -17,6 +18,7 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
   const [questions, setQuestions] = useState([emptyQuestion()]);
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState(null);
+  const [showImport, setShowImport] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -24,6 +26,7 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
       setDescription('');
       setQuestions([emptyQuestion()]);
       setUploadingIndex(null);
+      setShowImport(false);
     }
   }, [isOpen]);
 
@@ -62,6 +65,16 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
   };
 
   const addQuestion = () => setQuestions((prev) => [...prev, emptyQuestion()]);
+
+  // Imported questions replace a pristine starter row, otherwise they append.
+  const handleImport = (imported) => {
+    setQuestions((prev) => {
+      const isPristine =
+        prev.length === 1 && !prev[0].question_text.trim() && prev[0].options.every((o) => !o.trim());
+      return isPristine ? imported : [...prev, ...imported];
+    });
+    setShowImport(false);
+  };
   const removeQuestion = (qIndex) => setQuestions((prev) => prev.filter((_, i) => i !== qIndex));
 
   // 🌟 Handle Question Diagram Upload to R2
@@ -145,6 +158,18 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
         </div>
 
         <form onSubmit={handleSubmit} className="overflow-y-auto p-6 flex flex-col gap-6">
+          {showImport ? (
+            <DocxImportPanel onImport={handleImport} onCancel={() => setShowImport(false)} />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowImport(true)}
+              className="flex items-center justify-center gap-2 border-2 border-black rounded-xl py-2.5 font-bold text-sm bg-[#F4DFD8] hover:bg-[#F9E076] transition-colors shadow-[2px_2px_0px_0px_#111]"
+            >
+              <FileText size={16} strokeWidth={2.5} /> Import questions from Word (.docx)
+            </button>
+          )}
+
           <div>
             <label className="block font-bold text-sm mb-1">Quiz Title</label>
             <MathInput
