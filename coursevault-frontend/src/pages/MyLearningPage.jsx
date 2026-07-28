@@ -25,10 +25,14 @@ export default function MyLearningPage() {
     fetchEnrollments();
   }, []);
 
+  const handleBuyCourse = (courseId) => {
+    console.log('Buy course:', courseId);
+  };
+
   return (
     <div className="pb-20">
       <h2 className="text-4xl font-bold tracking-tight mb-8">Continue Learning</h2>
-      
+
       {isLoading ? (
         <div className="text-center font-bold py-20 text-gray-400">Loading your courses...</div>
       ) : enrollments.length === 0 ? (
@@ -38,24 +42,23 @@ export default function MyLearningPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-3 md:gap-y-16 items-start">
           {enrollments.map((item, index) => (
-            <CourseCard 
-              key={item.enrollment_id} 
-              
-              // Map the custom backend fields to standard fields CourseCard expects
+            <CourseCard
+              key={item.enrollment_id}
               course={{
                 ...item,
-                id: item.course_id,               // Fixes the 500 UUID error
+                id: item.course_id,
                 title: item.course_title,
                 description: item.course_description,
                 educator_name: item.educator_name,
                 price: item.course_price,
                 status: item.course_status,
-                progress: item.progress || 0      // Powers the progress bar
-              }} 
-              
-              index={index} 
+                progress: item.progress || 0,
+                thumbnail_url: item.thumbnail_url
+              }}
+              index={index}
               isMyLearning={true}
               onClick={(courseId) => navigate(`/course/${courseId}`)}
+              onBuyCourse={handleBuyCourse}
             />
           ))}
         </div>
