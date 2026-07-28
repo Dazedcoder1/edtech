@@ -64,6 +64,98 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
     }
 });
 
+// ============================================================
+// POST /api/content/upload-image
+// 🌟 NEW: Used by QuizModal.jsx's "Add Diagram" button. Uploads a small
+// standalone image (quiz diagrams etc, not tied to a content_items row)
+// straight to R2 and returns a URL the frontend can use directly as
+// <img src>. This does NOT touch content_items -- it's a lighter-weight
+// path than the main course-content upload.
+// ============================================================
+router.post("/upload-image", authMiddleware, upload.single("file"), async (req, res) => {
+    try {
+        const file = req.file;
+        const folder = (req.query.folder || "misc").replace(/[^a-zA-Z0-9_-]/g, "");
+
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload images" });
+        }
+        if (!file) return res.status(400).json({ error: "No file uploaded" });
+        if (!file.mimetype.startsWith("image/")) {
+            return res.status(400).json({ error: "Only image files are allowed" });
+        }
+
+        const fileHash = generateFileHash(file.buffer);
+        const extension = getFileExtension(file.originalname) || ".jpg";
+        const r2Key = `images/${folder}/${fileHash}${extension}`;
+
+        await r2Client.send(new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: r2Key,
+            Body: file.buffer,
+            ContentType: file.mimetype
+        }));
+
+        // Frontend just needs a URL it can drop into <img src>.
+        // Route it through our own stream-image endpoint (below) so we
+        // don't need to expose public R2 URLs.
+        const imageUrl = `/api/content/stream-image?key=${encodeURIComponent(r2Key)}`;
+
+        res.status(201).json({ success: true, imageUrl, key: r2Key });
+    } catch (err) {
+        console.error("Image upload error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================
+// GET /api/content/stream-image
+// 🌟 NEW: Serves an image previously stored via /upload-image, straight
+// from R2. Used as the <img src> for quiz diagrams both in QuizModal.jsx
+// (preview) and QuizTakeModal.jsx (student view).
+// ============================================================
+router.get("/stream-image", authMiddleware, async (req, res) => {
+    try {
+        const { key } = req.query;
+        if (!key) return res.status(400).json({ error: "key is required" });
+
+        // Only ever serve keys under images/ -- this route isn't a generic
+        // R2 proxy, just an image server for the image-upload feature above.
+        if (!key.startsWith("images/")) {
+            return res.status(400).json({ error: "Invalid image key" });
+        }
+
+        const command = new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key });
+        const r2Response = await r2Client.send(command);
+
+        const chunks = [];
+        for await (const chunk of r2Response.Body) {
+            chunks.push(chunk);
+        }
+        const imageBuffer = Buffer.concat(chunks);
+
+        res.setHeader("Content-Type", r2Response.ContentType || "image/jpeg");
+        res.setHeader("Content-Length", imageBuffer.length);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.send(imageBuffer);
+
+    } catch (err) {
+        console.error("Stream image error:", err);
+        if (err.name === "NoSuchKey" || err.Code === "NoSuchKey") {
+            return res.status(404).json({ error: "Image not found in storage" });
+        }
+        res.status(500).json({ error: "Failed to load image", details: err.message });
+    }
+});
+
+router.options("/stream-image", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.status(200).end();
+});
+
 // POST /api/content/upload-video
 router.post("/upload-video", authMiddleware, upload.single("file"), async (req, res) => {
     try {
@@ -210,7 +302,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         console.log(`📄 PDF Request: contentId=${id}, courseId=${courseId}`);
         console.log(`👤 User: ${req.user.id} (${req.user.role})`);
         
-        // Get content from database
         const result = await pool.query(`SELECT * FROM content_items WHERE id = $1`, [id]);
         if (result.rows.length === 0) {
             console.log(`❌ Content not found: ${id}`);
@@ -221,16 +312,13 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         console.log(`📄 Content found: "${content.title}" (${content.content_type})`);
         console.log(`📄 R2 Key: ${content.r2_key}`);
         
-        // Check if it's a PDF
         if (content.content_type !== "pdf") {
             console.log(`❌ Not a PDF: ${content.content_type}`);
             return res.status(400).json({ error: "Not a PDF file" });
         }
         
-        // Check if user has access
         let hasAccess = false;
         
-        // Check if user is course creator
         if (courseId) {
             const courseCheck = await pool.query(
                 `SELECT educator_id FROM courses WHERE id = $1`,
@@ -245,7 +333,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
                 }
             }
             
-            // Check if user is enrolled
             if (!hasAccess) {
                 const enrollmentCheck = await pool.query(
                     `SELECT * FROM enrollments WHERE user_id = $1 AND course_id = $2`,
@@ -259,13 +346,11 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             }
         }
         
-        // Check if content is preview
         if (!hasAccess && content.preview) {
             hasAccess = true;
             console.log(`✅ Content is preview, access granted`);
         }
         
-        // Check if user is admin
         if (!hasAccess && req.user.role === 'admin') {
             hasAccess = true;
             console.log(`✅ User is admin, access granted`);
@@ -279,13 +364,11 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             });
         }
         
-        // Check if r2_key exists
         if (!content.r2_key) {
             console.error(`❌ No r2_key for content ${id}`);
             return res.status(404).json({ error: "PDF file not found in storage" });
         }
         
-        // Get PDF from R2
         try {
             console.log(`🔍 Fetching from R2: ${content.r2_key}`);
             
@@ -297,7 +380,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             const r2Response = await r2Client.send(command);
             console.log(`✅ R2 response received`);
             
-            // Read the file
             const chunks = [];
             for await (const chunk of r2Response.Body) {
                 chunks.push(chunk);
@@ -306,7 +388,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             const pdfBuffer = Buffer.concat(chunks);
             console.log(`📄 PDF size: ${pdfBuffer.length} bytes`);
             
-            // Set headers for PDF
             res.setHeader("Content-Type", "application/pdf");
             res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(content.file_name || content.title + '.pdf')}"`);
             res.setHeader("Content-Length", pdfBuffer.length);
@@ -315,7 +396,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
             res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
             
-            // Send the PDF
             res.send(pdfBuffer);
             
             console.log(`✅ PDF served successfully: ${content.title}`);
@@ -323,7 +403,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         } catch (r2Error) {
             console.error(`❌ R2 fetch error:`, r2Error);
             
-            // Check if it's a "NoSuchKey" error
             if (r2Error.name === "NoSuchKey" || r2Error.Code === "NoSuchKey") {
                 return res.status(404).json({ 
                     error: "PDF file not found in storage. Please re-upload the file."
@@ -342,7 +421,6 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
     }
 });
 
-// OPTIONS route for CORS preflight
 router.options("/:id/pdf", (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");

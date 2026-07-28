@@ -52,7 +52,6 @@ router.post("/create", authMiddleware, async (req, res) => {
 
         const quiz = quizResult.rows[0];
 
-        // 🌟 UPDATED: Added image_url to the INSERT statement
         for (const q of questions) {
             await client.query(`
                 INSERT INTO quiz_questions (quiz_id, question_text, options, correct_option_index, image_url)
@@ -72,15 +71,50 @@ router.post("/create", authMiddleware, async (req, res) => {
 });
 
 // ============================================================
+// Helper: get-or-restart the single attempt row a user has for a quiz.
+// The schema only allows ONE quiz_attempts row per (quiz_id, user_id)
+// (UNIQUE constraint), so this always upserts onto that same row instead
+// of ever trying to INSERT a fresh one when one already exists.
+// ============================================================
+async function getOrRestartAttempt(client, quizId, userId) {
+    const result = await client.query(`
+        INSERT INTO quiz_attempts (quiz_id, user_id, status, started_at)
+        VALUES ($1, $2, 'in_progress', NOW())
+        ON CONFLICT (quiz_id, user_id)
+        DO UPDATE SET
+            status = 'in_progress',
+            started_at = NOW(),
+            completed_at = NULL,
+            score = NULL,
+            correct_answers = 0,
+            updated_at = NOW()
+        WHERE quiz_attempts.status <> 'in_progress'
+        RETURNING id
+    `, [quizId, userId]);
+
+    if (result.rows.length > 0) {
+        return result.rows[0].id;
+    }
+
+    // Row already existed and was already 'in_progress' (WHERE clause skipped
+    // the update) -- just fetch its id.
+    const existing = await client.query(`
+        SELECT id FROM quiz_attempts WHERE quiz_id = $1 AND user_id = $2
+    `, [quizId, userId]);
+    return existing.rows[0].id;
+}
+
+// ============================================================
 // SUBMIT QUIZ ANSWER (per question)
 // ============================================================
 router.post("/:quizId/answer", authMiddleware, async (req, res) => {
+    const client = await pool.connect();
     try {
         const { quizId } = req.params;
         const { questionId, selectedOption } = req.body;
         const userId = req.user.id;
 
-        const quizCheck = await pool.query(`
+        const quizCheck = await client.query(`
             SELECT c.id AS course_id, c.educator_id 
             FROM quizzes q
             JOIN modules m ON q.module_id = m.id
@@ -89,51 +123,41 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
         `, [quizId]);
 
         if (quizCheck.rows.length === 0) {
+            client.release();
             return res.status(404).json({ error: "Quiz not found" });
         }
 
         const isOwner = quizCheck.rows[0].educator_id === userId;
         if (!isOwner) {
-            const enrollCheck = await pool.query(
+            const enrollCheck = await client.query(
                 `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
                 [userId, quizCheck.rows[0].course_id]
             );
             if (enrollCheck.rows.length === 0) {
+                client.release();
                 return res.status(403).json({ error: "Access denied. You must be enrolled." });
             }
         }
 
-        const questionResult = await pool.query(`
+        const questionResult = await client.query(`
             SELECT id, correct_option_index
             FROM quiz_questions
             WHERE id = $1 AND quiz_id = $2
         `, [questionId, quizId]);
 
         if (questionResult.rows.length === 0) {
+            client.release();
             return res.status(404).json({ error: "Question not found" });
         }
 
         const question = questionResult.rows[0];
         const isCorrect = selectedOption === question.correct_option_index;
 
-        let attemptResult = await pool.query(`
-            SELECT id FROM quiz_attempts 
-            WHERE quiz_id = $1 AND user_id = $2 AND status = 'in_progress'
-        `, [quizId, userId]);
+        await client.query("BEGIN");
 
-        let attemptId;
-        if (attemptResult.rows.length === 0) {
-            const newAttempt = await pool.query(`
-                INSERT INTO quiz_attempts (quiz_id, user_id, status, started_at)
-                VALUES ($1, $2, 'in_progress', NOW())
-                RETURNING id
-            `, [quizId, userId]);
-            attemptId = newAttempt.rows[0].id;
-        } else {
-            attemptId = attemptResult.rows[0].id;
-        }
+        const attemptId = await getOrRestartAttempt(client, quizId, userId);
 
-        await pool.query(`
+        await client.query(`
             INSERT INTO quiz_answers (attempt_id, question_id, selected_option, is_correct, answered_at)
             VALUES ($1, $2, $3, $4, NOW())
             ON CONFLICT (attempt_id, question_id) 
@@ -143,7 +167,7 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
                 answered_at = NOW()
         `, [attemptId, questionId, selectedOption, isCorrect]);
 
-        await pool.query(`
+        await client.query(`
             UPDATE quiz_attempts 
             SET correct_answers = (
                 SELECT COUNT(*) FROM quiz_answers 
@@ -157,6 +181,8 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
             WHERE id = $1
         `, [attemptId, quizId]);
 
+        await client.query("COMMIT");
+
         res.json({
             success: true,
             isCorrect,
@@ -164,68 +190,98 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
         });
 
     } catch (err) {
+        await client.query("ROLLBACK");
         console.error("Quiz answer error:", err);
         res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
 });
 
 // ============================================================
 // SUBMIT QUIZ (finalize)
+// 🌟 FIXED: uses getOrRestartAttempt so it always reuses the single
+// (quiz_id, user_id) row instead of trying to INSERT a duplicate one --
+// this is what was causing the "duplicate key value violates unique
+// constraint quiz_attempts_quiz_id_user_id_key" error.
 // ============================================================
 router.post("/:quizId/submit", authMiddleware, async (req, res) => {
+    const client = await pool.connect();
     try {
         const { quizId } = req.params;
         const userId = req.user.id;
         const { answers } = req.body;
 
-        // If answers are provided in body, save them first
-        if (answers && typeof answers === 'object') {
-            for (const [questionId, selectedOption] of Object.entries(answers)) {
-                await new Promise((resolve) => {
-                    // Call the answer endpoint internally
-                    req.params.questionId = questionId;
-                    req.body = { questionId, selectedOption };
-                    // We'll just save directly
-                    resolve();
-                });
-            }
+        if (!answers || typeof answers !== "object") {
+            client.release();
+            return res.status(400).json({ error: "answers object is required" });
         }
 
-        const attemptResult = await pool.query(`
-            SELECT id, correct_answers, total_questions
-            FROM quiz_attempts 
-            WHERE quiz_id = $1 AND user_id = $2 AND status = 'in_progress'
-        `, [quizId, userId]);
+        await client.query("BEGIN");
 
-        if (attemptResult.rows.length === 0) {
-            return res.status(404).json({ error: "No attempt found" });
+        const attemptId = await getOrRestartAttempt(client, quizId, userId);
+
+        // Save every answer submitted from the frontend
+        for (const [questionId, selectedOption] of Object.entries(answers)) {
+            const questionResult = await client.query(`
+                SELECT correct_option_index FROM quiz_questions
+                WHERE id = $1 AND quiz_id = $2
+            `, [questionId, quizId]);
+
+            if (questionResult.rows.length === 0) continue; // ignore stray/unknown question ids
+
+            const isCorrect = selectedOption === questionResult.rows[0].correct_option_index;
+
+            await client.query(`
+                INSERT INTO quiz_answers (attempt_id, question_id, selected_option, is_correct, answered_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (attempt_id, question_id)
+                DO UPDATE SET
+                    selected_option = EXCLUDED.selected_option,
+                    is_correct = EXCLUDED.is_correct,
+                    answered_at = NOW()
+            `, [attemptId, questionId, selectedOption, isCorrect]);
         }
 
-        const attempt = attemptResult.rows[0];
-        const score = attempt.total_questions > 0 
-            ? Math.round((attempt.correct_answers / attempt.total_questions) * 100)
-            : 0;
+        // Recompute totals from what's actually saved for this attempt
+        const totalsResult = await client.query(`
+            SELECT
+                (SELECT COUNT(*) FROM quiz_answers WHERE attempt_id = $1 AND is_correct = true) AS correct_answers,
+                (SELECT COUNT(*) FROM quiz_questions WHERE quiz_id = $2) AS total_questions
+        `, [attemptId, quizId]);
 
-        await pool.query(`
-            UPDATE quiz_attempts 
-            SET 
+        const correctAnswers = Number(totalsResult.rows[0].correct_answers);
+        const totalQuestions = Number(totalsResult.rows[0].total_questions);
+        const score = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
+
+        await client.query(`
+            UPDATE quiz_attempts
+            SET
                 status = 'completed',
-                score = $1,
-                completed_at = NOW()
-            WHERE id = $2
-        `, [score, attempt.id]);
+                correct_answers = $1,
+                total_questions = $2,
+                score = $3,
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $4
+        `, [correctAnswers, totalQuestions, score, attemptId]);
+
+        await client.query("COMMIT");
 
         res.json({
             success: true,
-            attemptId: attempt.id,
-            total: attempt.total_questions,
-            correct: attempt.correct_answers,
+            attemptId,
+            total: totalQuestions,
+            correct: correctAnswers,
             score
         });
 
     } catch (err) {
+        await client.query("ROLLBACK");
         console.error("Quiz submit error:", err);
         res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -315,7 +371,6 @@ router.get("/attempt/:attemptId", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Access denied" });
         }
 
-        // 🌟 UPDATED: Added qq.image_url to attempt review queries
         const answersResult = await pool.query(`
             SELECT 
                 qa.*,
@@ -373,7 +428,6 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
             }
         }
 
-        // 🌟 UPDATED: Added image_url to the question SELECT query
         const questionsResult = await pool.query(`
             SELECT id, question_text, options, correct_option_index, image_url
             FROM quiz_questions WHERE quiz_id = $1 ORDER BY created_at ASC
@@ -390,7 +444,7 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
         let attempt = null;
         if (!isOwner) {
             const attemptResult = await pool.query(`
-                SELECT id, answers, started_at, status
+                SELECT id, started_at, status
                 FROM quiz_attempts
                 WHERE quiz_id = $1 AND user_id = $2 AND status = 'in_progress'
                 ORDER BY started_at DESC LIMIT 1
