@@ -551,7 +551,7 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
                 WHERE quiz_id = $1 AND user_id = $2 AND status = 'in_progress'
                 ORDER BY started_at DESC LIMIT 1
             `, [quizId, req.user.id]);
-            
+
             if (attemptResult.rows.length > 0) {
                 attempt = attemptResult.rows[0];
             }
@@ -559,12 +559,12 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
 
         res.json({
             success: true,
-            quiz: { 
-                id: quiz.id, 
-                title: quiz.title, 
-                description: quiz.description, 
-                module_id: quiz.module_id, 
-                folder_id: quiz.folder_id 
+            quiz: {
+                id: quiz.id,
+                title: quiz.title,
+                description: quiz.description,
+                module_id: quiz.module_id,
+                folder_id: quiz.folder_id
             },
             questions,
             isOwner,
@@ -583,15 +583,22 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
 router.get("/module/:moduleId", authMiddleware, async (req, res) => {
     try {
         const { moduleId } = req.params;
+        const userId = req.user.id;
+
+        // 🌟 PROGRESS TRACKING: left-join the current user's own completed
+        // attempt so the frontend can show a "Completed" badge + score.
         const result = await pool.query(`
             SELECT q.id, q.title, q.description, q.created_at, q.folder_id,
-                   COUNT(qq.id)::int AS question_count
+                   COUNT(DISTINCT qq.id)::int AS question_count,
+                   qa.score AS user_score,
+                   (qa.status = 'completed') AS is_completed
             FROM quizzes q
             LEFT JOIN quiz_questions qq ON qq.quiz_id = q.id
+            LEFT JOIN quiz_attempts qa ON qa.quiz_id = q.id AND qa.user_id = $2 AND qa.status = 'completed'
             WHERE q.module_id = $1
-            GROUP BY q.id
+            GROUP BY q.id, qa.score, qa.status
             ORDER BY q.created_at DESC
-        `, [moduleId]);
+        `, [moduleId, userId]);
 
         res.json({ success: true, quizzes: result.rows });
     } catch (err) {
