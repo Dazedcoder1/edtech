@@ -1,6 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import katex from 'katex';
-import { convertToLatex, isMathText } from '../../utils/mathRenderer';
+import { convertToLatex, isMathText, renderMixed } from '../../utils/mathRenderer';
+import {
+  readMathFromClipboard,
+  insertAtCursor,
+  repairMangledMath,
+} from '../../utils/mathPasteHandler';
 
 export default function MathInput({ 
   value, 
@@ -13,80 +17,98 @@ export default function MathInput({
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const [degradedPaste, setDegradedPaste] = useState(false);
+  const [repairNotes, setRepairNotes] = useState([]);
+  const [rawPaste, setRawPaste] = useState(null); // pre-repair text, for undo
   const inputRef = useRef(null);
 
-  // Function to render math with KaTeX
+  // Renders either bare math or prose with `$…$` islands.
   const renderMathWithKatex = (text) => {
     if (!text) return '';
-    
     try {
-      // Convert to LaTeX first
-      const latex = convertToLatex(text);
-      
-      // Render with KaTeX
-      return katex.renderToString(latex, {
-        throwOnError: false,
-        displayMode: false,
-        trust: true,
-        macros: {
-          "\\R": "\\mathbb{R}",
-        }
-      });
+      return renderMixed(text);
     } catch (error) {
       console.log('Render error:', error);
       return text;
     }
   };
 
-  // Handle paste event
-  const handlePaste = (e) => {
-    // Get pasted text
-    const pastedText = e.clipboardData.getData('text');
-    
-    // Check if it's math
-    if (isMathText(pastedText) || pastedText.includes('^') || pastedText.includes('_')) {
-      e.preventDefault();
-      
-      // Convert to LaTeX
-      const latex = convertToLatex(pastedText);
-      
-      // Update the value with the LaTeX
-      onChange(latex);
-      
-      // Show rendered preview
-      try {
-        const renderedHtml = renderMathWithKatex(latex);
-        if (renderedHtml && renderedHtml !== latex) {
-          setPreviewHtml(renderedHtml);
-          setShowPreview(true);
-          
-          // Auto-hide preview after 5 seconds
-          setTimeout(() => setShowPreview(false), 5000);
-        }
-      } catch (error) {
-        console.log('Render error:', error);
+  const showRendered = (text) => {
+    try {
+      const html = renderMathWithKatex(text);
+      if (html && html !== text) {
+        setPreviewHtml(html);
+        setShowPreview(true);
+        return;
       }
+    } catch (error) {
+      console.log('Render error:', error);
     }
+    setShowPreview(false);
+  };
+
+  // Handle paste event.
+  //
+  // Prefer the clipboard's text/html flavour: when math is copied from a page
+  // that used KaTeX/MathJax, the original TeX is embedded there. The text/plain
+  // flavour is the flattened glyphs ("∫x2dx=3x3+C") and is unrecoverable.
+  const handlePaste = (e) => {
+    const result = readMathFromClipboard(e);
+    if (!result.text) return;
+
+    setDegradedPaste(false);
+    setRepairNotes([]);
+    setRawPaste(null);
+
+    // Path 1 — the source embedded its original TeX. Exact, nothing to guess.
+    if (result.lossless) {
+      e.preventDefault();
+      insertAtCursor(e.target, result.text, value, onChange);
+      showRendered(result.text);
+      return;
+    }
+
+    const pastedText = result.text;
+    const isMathy =
+      isMathText(pastedText) || pastedText.includes('^') || pastedText.includes('_');
+
+    // Path 2 — structure was already lost. Reconstruct the most likely reading
+    // and apply it, but keep the original so it can be put back.
+    if (result.degraded) {
+      e.preventDefault();
+      const repaired = repairMangledMath(convertToLatex(pastedText));
+      insertAtCursor(e.target, repaired.text, value, onChange);
+      showRendered(repaired.text);
+      setDegradedPaste(true);
+      setRepairNotes(repaired.notes);
+      setRawPaste(pastedText);
+      return;
+    }
+
+    if (isMathy) {
+      e.preventDefault();
+      const latex = convertToLatex(pastedText);
+      insertAtCursor(e.target, latex, value, onChange);
+      showRendered(latex);
+    }
+  };
+
+  const undoRepair = () => {
+    if (rawPaste === null) return;
+    onChange(rawPaste);
+    showRendered(rawPaste);
+    setDegradedPaste(false);
+    setRepairNotes([]);
+    setRawPaste(null);
   };
 
   const handleChange = (e) => {
     const newValue = e.target.value;
     onChange(newValue);
-    
-    // If user types math, show preview
+    setDegradedPaste(false);
+
     if (newValue && (isMathText(newValue) || newValue.includes('^') || newValue.includes('_'))) {
-      try {
-        const latex = convertToLatex(newValue);
-        const renderedHtml = renderMathWithKatex(latex);
-        if (renderedHtml && renderedHtml !== newValue) {
-          setPreviewHtml(renderedHtml);
-          setShowPreview(true);
-        } else {
-          setShowPreview(false);
-        }
-      } catch (error) {
-        setShowPreview(false);
-      }
+      showRendered(newValue);
     } else {
       setShowPreview(false);
     }
@@ -98,35 +120,17 @@ export default function MathInput({
 
   const handleBlur = () => {
     setIsFocused(false);
-    // Check if final value is math and render it
     if (value && (isMathText(value) || value.includes('^') || value.includes('_'))) {
-      try {
-        const latex = convertToLatex(value);
-        const renderedHtml = renderMathWithKatex(latex);
-        if (renderedHtml && renderedHtml !== value) {
-          setPreviewHtml(renderedHtml);
-          setShowPreview(true);
-        }
-      } catch (error) {
-        setShowPreview(false);
-      }
+      showRendered(value);
     }
   };
 
   // Update preview when value changes from parent
   useEffect(() => {
     if (value && isFocused && (isMathText(value) || value.includes('^') || value.includes('_'))) {
-      try {
-        const latex = convertToLatex(value);
-        const renderedHtml = renderMathWithKatex(latex);
-        if (renderedHtml && renderedHtml !== value) {
-          setPreviewHtml(renderedHtml);
-          setShowPreview(true);
-        }
-      } catch (error) {
-        setShowPreview(false);
-      }
+      showRendered(value);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, isFocused]);
 
   const InputComponent = multiline ? 'textarea' : 'input';
@@ -168,8 +172,39 @@ export default function MathInput({
         )}
       </div>
       
+      {/* Degraded paste warning — the source carried no LaTeX, so exponents
+          and fractions were already flattened before they reached us. */}
+      {degradedPaste && (
+        <div className="mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded px-2 py-1.5">
+          <div className="flex items-start justify-between gap-2">
+            <span className="font-semibold">
+              ⚠️ This paste arrived without formatting — structure was reconstructed.
+            </span>
+            <button
+              type="button"
+              onClick={undoRepair}
+              className="shrink-0 underline hover:no-underline font-semibold"
+            >
+              Undo
+            </button>
+          </div>
+          {repairNotes.length > 0 && (
+            <ul className="mt-1 ml-4 list-disc space-y-0.5 text-amber-700">
+              {repairNotes.map((note, i) => (
+                <li key={i}>{note}</li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-1 text-amber-700">
+            These are best guesses — check the preview before saving. If this came
+            from a Word document, <strong>Import from Word (.docx)</strong> reads the
+            equations exactly and needs no guessing.
+          </div>
+        </div>
+      )}
+
       {/* Math indicator */}
-      {value && (isMathText(value) || value.includes('^') || value.includes('_')) && (
+      {!degradedPaste && value && (isMathText(value) || value.includes('^') || value.includes('_')) && (
         <div className="mt-1 text-xs text-blue-500 flex items-center gap-1">
           <span>📐</span>
           <span>Math content detected</span>
