@@ -232,7 +232,7 @@ router.post("/", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only educators can create courses" });
         }
 
-        const { title, description, price, status, parent_course_id } = req.body;
+        const { title, description, price, status, parent_course_id, thumbnail_url } = req.body;
 
         const client = await pool.connect();
 
@@ -240,10 +240,9 @@ router.post("/", authMiddleware, async (req, res) => {
             await client.query("BEGIN");
 
             const courseResult = await client.query(`
-                INSERT INTO courses (educator_id, title, description, price, status, is_active, parent_course_id)
-                VALUES ($1, $2, $3, $4, $5, true, $6) RETURNING *
-            `, [req.user.id, title, description, price || 0, status || "draft", parent_course_id || null]);
-
+    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id)
+    VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING *
+`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null]);
             const course = courseResult.rows[0];
 
             const moduleResult = await client.query(`
@@ -319,19 +318,19 @@ router.put("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only course creator can update courses" });
         }
 
-        const { title, description, price, status } = req.body;
+        const { title, description, price, status ,thumbnail_url} = req.body;
 
         const result = await pool.query(`
-            UPDATE courses
-            SET title = COALESCE($1, title),
-                description = COALESCE($2, description),
-                price = COALESCE($3, price),
-                status = COALESCE($4, status),
-                updated_at = NOW()
-            WHERE id = $5
-            RETURNING *
-        `, [title, description, price, status, id]);
-
+    UPDATE courses
+    SET title = COALESCE($1, title),
+        description = COALESCE($2, description),
+        price = COALESCE($3, price),
+        status = COALESCE($4, status),
+        thumbnail_url = COALESCE($5, thumbnail_url),
+        updated_at = NOW()
+    WHERE id = $6
+    RETURNING *
+`, [title, description, price, status, thumbnail_url, id]);
         res.json({ success: true, course: result.rows[0] });
     } catch (err) {
         res.status(500).json({ error: err.message });

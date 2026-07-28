@@ -52,11 +52,12 @@ router.post("/create", authMiddleware, async (req, res) => {
 
         const quiz = quizResult.rows[0];
 
+        // 🌟 UPDATED: Added image_url to the INSERT statement
         for (const q of questions) {
             await client.query(`
-                INSERT INTO quiz_questions (quiz_id, question_text, options, correct_option_index)
-                VALUES ($1, $2, $3, $4)
-            `, [quiz.id, q.question_text, JSON.stringify(q.options), q.correct_option_index]);
+                INSERT INTO quiz_questions (quiz_id, question_text, options, correct_option_index, image_url)
+                VALUES ($1, $2, $3, $4, $5)
+            `, [quiz.id, q.question_text, JSON.stringify(q.options), q.correct_option_index, q.image_url || null]);
         }
 
         await client.query("COMMIT");
@@ -185,6 +186,7 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
                     req.params.questionId = questionId;
                     req.body = { questionId, selectedOption };
                     // We'll just save directly
+                    resolve();
                 });
             }
         }
@@ -313,12 +315,14 @@ router.get("/attempt/:attemptId", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Access denied" });
         }
 
+        // 🌟 UPDATED: Added qq.image_url to attempt review queries
         const answersResult = await pool.query(`
             SELECT 
                 qa.*,
                 qq.question_text,
                 qq.options,
-                qq.correct_option_index
+                qq.correct_option_index,
+                qq.image_url
             FROM quiz_answers qa
             JOIN quiz_questions qq ON qa.question_id = qq.id
             WHERE qa.attempt_id = $1
@@ -369,8 +373,9 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
             }
         }
 
+        // 🌟 UPDATED: Added image_url to the question SELECT query
         const questionsResult = await pool.query(`
-            SELECT id, question_text, options, correct_option_index
+            SELECT id, question_text, options, correct_option_index, image_url
             FROM quiz_questions WHERE quiz_id = $1 ORDER BY created_at ASC
         `, [quizId]);
 
@@ -378,6 +383,7 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
             id: q.id,
             question_text: q.question_text,
             options: q.options,
+            image_url: q.image_url,
             ...(isOwner ? { correct_option_index: q.correct_option_index } : {})
         }));
 

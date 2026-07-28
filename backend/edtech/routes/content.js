@@ -79,7 +79,68 @@ function cleanResolutionString(scaleStr) {
     const standard = scaleStr.replace("w=", "").replace("h=", "");
     return standard.includes(":") ? standard.replace(":", "x") : standard;
 }
+router.post("/upload-image", authMiddleware, upload.single("file"), async (req, res) => {
+    try {
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload images" });
+        }
 
+        const file = req.file;
+        const folder = req.query.folder || "general";
+
+        if (!file) return res.status(400).json({ error: "No image file provided" });
+        if (!file.mimetype.startsWith("image/")) {
+            return res.status(400).json({ error: "Only image files are allowed (PNG, JPG, WEBP)" });
+        }
+
+        const fileHash = generateFileHash(file.buffer);
+        const extension = getFileExtension(file.originalname) || ".png";
+        const r2Key = `images/${folder}/${fileHash}${extension}`;
+
+        await r2Client.send(new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: r2Key,
+            Body: file.buffer,
+            ContentType: file.mimetype
+        }));
+
+        // 🌟 FIXED: Use reliable query param (?key=...) instead of URL path wildcard
+        const baseUrl = process.env.API_URL || `${req.protocol}://${req.get('host')}/api`;
+        const imageUrl = `${baseUrl}/content/stream-image?key=${encodeURIComponent(r2Key)}`;
+
+        console.log(`🖼️ Uploaded image: ${r2Key} -> URL: ${imageUrl}`);
+        res.status(201).json({ success: true, imageUrl, r2Key });
+    } catch (err) {
+        console.error("Image upload error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ============================================================
+// GET /api/content/stream-image
+// Streams images directly from R2 using a query parameter (?key=...)
+// ============================================================
+router.get("/stream-image", async (req, res) => {
+    try {
+        const r2Key = req.query.key;
+        if (!r2Key) return res.status(400).send("Missing image key parameter");
+
+        const command = new GetObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: r2Key
+        });
+
+        const response = await r2Client.send(command);
+        
+        res.setHeader("Content-Type", response.ContentType || "image/png");
+        res.setHeader("Cache-Control", "public, max-age=31536000"); // Cache for 1 year
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        response.Body.pipe(res);
+    } catch (err) {
+        console.error("Stream image error:", err.message);
+        res.status(404).send("Image not found");
+    }
+});
 // POST /api/content/upload
 router.post("/upload", authMiddleware, handleUpload(upload.single("file")), async (req, res) => {
     const client = await pool.connect();
@@ -763,5 +824,12 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         }
     }
 }
+// ============================================================
+// POST /api/content/upload-image
+// Query Params: ?folder=thumbnails OR ?folder=quizzes
+// ============================================================
+// ============================================================
+// POST /api/content/upload-image
+// ============================================================
 
 export default router;
