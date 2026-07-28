@@ -1,12 +1,69 @@
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
+import { unicodeMathToLatex, isUnicodeMath } from './unicodeMath';
 
 // ============================================
 // ENHANCED CONVERTER - Handles all math types
 // ============================================
 
+/**
+ * True when `text` is already LaTeX source rather than the loose
+ * "unicode-ish maths" this converter is designed to normalise.
+ *
+ * This guard matters because convertToLatex is NOT idempotent: run it over
+ * its own output and STEP 4 sees the "/" inside "\frac{a}{b}", STEP 10 wraps
+ * the braces again, and the expression rots a little more on every keystroke.
+ * Real LaTeX needs no conversion, so return it untouched.
+ */
+export function looksLikeLatex(text) {
+  if (!text) return false;
+  return (
+    /\\(?:frac|dfrac|tfrac|int|iint|oint|sqrt|sum|prod|lim|left|right|begin|end|cdot|times|div|pm|mp|infty|partial|nabla|vec|hat|bar|binom|log|ln|sin|cos|tan|text|mathbb|mathcal|mathbf|alpha|beta|gamma|delta|theta|lambda|mu|sigma|phi|omega|pi|leq|geq|neq|approx|equiv|in|subset|cup|cap|forall|exists)\b/.test(
+      text
+    ) ||
+    /\\[a-zA-Z]+\s*\{/.test(text) ||
+    // Braced scripts are LaTeX even with no backslash in sight. Without this,
+    // perfectly good output like "a_{11}A_{31}+a_{12}A_{32}" or "{|A|}^{2}"
+    // falls through and gets re-processed into something worse.
+    /[\^_]\{[^{}]*\}/.test(text)
+  );
+}
+
+/**
+ * Unicode that still needs mapping to a LaTeX command. Text can be *both*
+ * partly LaTeX and still contain these (e.g. "∫_{a}^{b} x dx"), in which case
+ * the early return must not fire or the ∫ would reach KaTeX unconverted.
+ */
+const NEEDS_CONVERSION =
+  /[∫∬∭∮∑∏√×÷≤≥≠≈≡≅∝∞±∓∂∇∈∉⊂⊃⊆⊇∪∩∧∨¬∀∃∠⊥∥°⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉αβγδεζηθικλμνξπρστυφχψωΓΔΘΛΞΠΣΥΦΨΩ]/;
+
+/**
+ * A bare "/" between two operands is a fraction waiting to be stacked. Text
+ * can look like LaTeX (braced scripts) and still contain one, so this has to
+ * be checked separately or "(x^{3}-4)/x^{2}" would render as a slash rather
+ * than a proper \frac.
+ */
+const HAS_SLASH_FRACTION = /[a-zA-Z\d})\]]\s*\/\s*[a-zA-Z\d\\({]/;
+
 export function convertToLatex(text) {
   if (!text) return text;
+
+  // Word's linear format needs a real scanner, not regexes — its ▒ / 〖〗
+  // markers are structural and would otherwise survive into the output.
+  if (isUnicodeMath(text)) {
+    text = unicodeMathToLatex(text);
+  }
+
+  // Already LaTeX — converting again would corrupt it. Unless there is still
+  // raw unicode maths in there that KaTeX would choke on.
+  if (
+    looksLikeLatex(text) &&
+    !NEEDS_CONVERSION.test(text) &&
+    !HAS_SLASH_FRACTION.test(text)
+  ) {
+    return String(text).trim();
+  }
+
   let latex = text;
 
   // ============================================
@@ -52,17 +109,39 @@ export function convertToLatex(text) {
   // (a+b)/(c+d) -> \frac{a+b}{c+d}
   // ============================================
   
-  // Simple fractions: a/b
-  latex = latex.replace(/([a-zA-Z\d])\/([a-zA-Z\d])/g, '\\frac{$1}{$2}');
-  
-  // Complex fractions: (a+b)/(c+d)
-  latex = latex.replace(/\(([^()]+)\)\s*\/\s*\(([^()]+)\)/g, '\\frac{$1}{$2}');
-  
-  // Mixed: a/(b+c)
-  latex = latex.replace(/([a-zA-Z\d])\s*\/\s*\(([^()]+)\)/g, '\\frac{$1}{$2}');
-  
-  // Mixed: (a+b)/c
-  latex = latex.replace(/\(([^()]+)\)\s*\/\s*([a-zA-Z\d])/g, '\\frac{$1}{$2}');
+  // One operand-aware rule replaces the four single-character rules that used
+  // to live here. Those matched exactly one character on each side of the "/",
+  // so a denominator carrying a script lost it:
+  //
+  //   (x^3 + 5x^2 - 4)/x^2  ->  \frac{x^3 + 5x^2 - 4}{x}^{2}
+  //
+  // The orphaned ^{2} then binds to the whole fraction and renders as
+  // (…/x)² instead of …/x². An operand is therefore a group, a command or a
+  // token *together with* any scripts hanging off it.
+  // A brace group, allowing two levels of nesting — enough for "{x^{2}+2}"
+  // and "\sqrt{a^{b^{c}}}". JS regex has no recursion, so the depth is fixed.
+  const BRACE = String.raw`\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}`;
+
+  // A command MUST swallow its brace arguments to count as one operand.
+  // Without the (?:BRACE)* below, "1/\sqrt{x^2+2}" split as
+  //   \frac{1}{\sqrt}{x^2+2}
+  // leaving the radicand stranded outside the fraction — which is both wrong
+  // and unbalanced once further rules touch it.
+  const OPERAND =
+    String.raw`(?:\\[a-zA-Z]+(?:${BRACE})*|${BRACE}|\([^()]*\)|[a-zA-Z\d.]+)` +
+    String.raw`(?:[\^_](?:${BRACE}|\\[a-zA-Z]+(?:${BRACE})*|[a-zA-Z\d]))*`;
+
+  // Parentheses that only existed to group a fraction operand are redundant
+  // once it sits inside \frac{…}.
+  const unwrap = (s) => {
+    const t = s.trim();
+    return /^\([^()]*\)$/.test(t) ? t.slice(1, -1).trim() : t;
+  };
+
+  latex = latex.replace(
+    new RegExp(`(${OPERAND})\\s*/\\s*(${OPERAND})`, 'g'),
+    (_, num, den) => `\\frac{${unwrap(num)}}{${unwrap(den)}}`
+  );
 
   // ============================================
   // STEP 5: Handle superscripts and subscripts
@@ -101,11 +180,27 @@ export function convertToLatex(text) {
   latex = latex.replace(/([a-zA-Z\d])_(\d+)/g, '$1_{$2}');
   latex = latex.replace(/([a-zA-Z\d])_([a-zA-Z])/g, '$1_{$2}');
 
+  // Parenthesised script arguments: x^(n+1) -> x^{n+1}, ∫_(-a)^(a) -> ∫_{-a}^{a}
+  //
+  // This must run before STEP 10 turns "(" into "\left(", because a script
+  // argument of more than one token MUST be braced — "_\left( a \right)" is a
+  // LaTeX syntax error, and it is what Word's linear format produces.
+  for (let pass = 0; pass < 3; pass++) {
+    latex = latex.replace(/([_^])\s*\(([^()]*)\)/g, '$1{$2}');
+  }
+
   // ============================================
   // STEP 6: Handle integrals and derivatives
   // ∫ x dx -> \int x \, dx
   // ∫_a^b x dx -> \int_{a}^{b} x \, dx
   // ============================================
+  // A trailing space is required: "∫x" must become "\int x", not "\intx"
+  // (which KaTeX reads as the undefined control sequence \intx). The lookahead
+  // keeps limits tight, so "∫_a^b" still yields "\int_a^b".
+  latex = latex.replace(/∫(?![_^])/g, '\\int ');
+  latex = latex.replace(/∬(?![_^])/g, '\\iint ');
+  latex = latex.replace(/∭(?![_^])/g, '\\iiint ');
+  latex = latex.replace(/∮(?![_^])/g, '\\oint ');
   latex = latex.replace(/∫/g, '\\int');
   latex = latex.replace(/∬/g, '\\iint');
   latex = latex.replace(/∭/g, '\\iiint');
@@ -343,7 +438,36 @@ export function convertToLatex(text) {
   // Trim final result
   latex = latex.trim();
 
+  // Safety net. Every rule above is a regex over text it does not fully
+  // understand, so a future edit can always drop or strand a brace — and
+  // unbalanced LaTeX is what KaTeX prints in red. If we broke a balanced
+  // input, hand back the input: imperfect rendering beats an error message.
+  if (braceBalance(latex) !== 0 && braceBalance(text) === 0) {
+    if (typeof console !== 'undefined') {
+      console.warn('[mathRenderer] conversion unbalanced braces; keeping original', {
+        input: text,
+        output: latex,
+      });
+    }
+    return String(text).trim();
+  }
+
   return latex;
+}
+
+/** Net brace depth; 0 means balanced. Ignores escaped \{ and \}. */
+export function braceBalance(text) {
+  if (!text) return 0;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') {
+      i++; // skip the escaped character
+      continue;
+    }
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') depth--;
+  }
+  return depth;
 }
 
 // ============================================
@@ -395,6 +519,37 @@ export function renderMath(text, displayMode = false) {
 
 export function renderMathPreview(text) {
   return renderMath(text, false);
+}
+
+/**
+ * Render a string that may be pure math OR prose containing `$…$` islands.
+ * A mixed paste ("Evaluate $\int x^2\,dx$ and simplify") must not be shoved
+ * through KaTeX wholesale, or the prose becomes italic maths variables.
+ */
+export function renderMixed(text) {
+  if (!text) return '';
+
+  if (!/\$/.test(text)) return renderMath(text, false);
+
+  const pattern = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
+  let out = '';
+  let lastIndex = 0;
+  let match;
+
+  const escapeHtml = (s) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      out += escapeHtml(text.slice(lastIndex, match.index));
+    }
+    const isBlock = match[1] !== undefined;
+    out += renderMath(isBlock ? match[1] : match[2], isBlock);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) out += escapeHtml(text.slice(lastIndex));
+
+  return out;
 }
 
 export function renderDisplayMath(text) {
@@ -475,7 +630,7 @@ function renderKatex(value, displayMode) {
       trust: true,
       macros: {
         "\\R": "\\mathbb{R}",
-        "\\N": "\\mathbb{N",
+        "\\N": "\\mathbb{N}",
         "\\Z": "\\mathbb{Z}",
         "\\Q": "\\mathbb{Q}",
         "\\C": "\\mathbb{C}"
