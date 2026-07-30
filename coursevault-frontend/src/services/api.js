@@ -16,6 +16,28 @@ const BASE_URL = getBaseUrl();
  */
 export { BASE_URL };
 
+/**
+ * Turn an API-relative media path into one the browser can actually load.
+ *
+ * The upload endpoints return relative URLs like
+ *   /api/content/stream-image?key=images/thumbnails/abc.jpg
+ * which are correct in production, where nginx serves the app and the API from
+ * the same origin. In local dev the app is on :5173 and the API on :3000, so a
+ * relative path in an <img src> resolves against Vite and 404s — the thumbnail
+ * silently never appears.
+ *
+ * Absolute URLs and data: URIs are passed through untouched.
+ */
+export const resolveMediaUrl = (url) => {
+  if (!url) return url;
+  if (/^(https?:|data:|blob:)/i.test(url)) return url;
+
+  // BASE_URL ends in /api; strip it so a path already starting with /api
+  // doesn't become /api/api/...
+  const origin = BASE_URL.replace(/\/api\/?$/, '');
+  return `${origin}${url.startsWith('/') ? '' : '/'}${url}`;
+};
+
 // Appends moduleId directly to FormData body instead of URL Query Params
 export const uploadVideoWithProgress = (moduleId, file, title, description, onProgress) => {
   return new Promise((resolve, reject) => {
@@ -91,7 +113,21 @@ export const fetchAPI = async (endpoint, options = {}) => {
         localStorage.removeItem('token');
         window.location.href = '/login';
       }
-      throw new Error(data?.error || data || 'Request failed');
+
+      // Express answers an unmatched route with an HTML error page. Passing
+      // that straight to Error() put a full <!DOCTYPE html> document inside an
+      // alert() box, burying the one useful line ("Cannot PUT /api/...").
+      if (typeof data === 'string' && /<!DOCTYPE|<html/i.test(data)) {
+        const cannot = data.match(/Cannot (GET|POST|PUT|DELETE|PATCH) ([^\s<]+)/i);
+        throw new Error(
+          cannot
+            ? `${cannot[1]} ${cannot[2]} — no such endpoint (${response.status}). ` +
+              `If this route was just added, restart the backend.`
+            : `Request failed (${response.status}).`
+        );
+      }
+
+      throw new Error(data?.error || (typeof data === 'string' ? data : null) || `Request failed (${response.status})`);
     }
 
     return data;

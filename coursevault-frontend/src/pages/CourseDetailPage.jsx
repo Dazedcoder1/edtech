@@ -54,8 +54,15 @@ export default function CourseDetailPage() {
   const [editingModule, setEditingModule] = useState(null);
   const [contentModalTab, setContentModalTab] = useState('pdf');
 
-  const loadCourseData = async () => {
-    setIsLoading(true);
+  /**
+   * @param {{silent?: boolean}} [options]
+   *   silent skips the full-page loading state. Reordering needs the fresh
+   *   data (otherwise the new order is lost the moment the optimistic list is
+   *   dropped) but must not blank the page behind a spinner on every click,
+   *   which looked exactly like the page reloading.
+   */
+  const loadCourseData = async ({ silent = false } = {}) => {
+    if (!silent) setIsLoading(true);
     try {
       const data = await fetchAPI(`/courses/${id}`);
       setCourse(data.course);
@@ -75,7 +82,7 @@ export default function CourseDetailPage() {
     } catch (err) {
       console.error(err);
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 

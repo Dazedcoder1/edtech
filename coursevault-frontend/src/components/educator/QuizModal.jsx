@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Trash2, Image as ImageIcon, FileText } from 'lucide-react';
 import Button from '../ui/Button.jsx';
-import { fetchAPI, BASE_URL } from '../../services/api.js';
+import { fetchAPI, BASE_URL, resolveMediaUrl } from '../../services/api.js';
 import MathInput from '../ui/MathInput.jsx';
 import DocxImportPanel from './DocxImportPanel.jsx';
 
@@ -247,7 +247,7 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
               {/* 🌟 Live Bordered Diagram Preview Inside Question */}
               {q.image_url && (
                 <div className="relative border-2 border-black rounded-xl overflow-hidden bg-white max-h-48 flex items-center justify-center my-1 shadow-[2px_2px_0px_0px_#000]">
-                  <img src={q.image_url} alt="Question diagram" className="max-h-48 w-auto object-contain p-2" />
+                  <img src={resolveMediaUrl(q.image_url)} alt="Question diagram" className="max-h-48 w-auto object-contain p-2" />
                   <button
                     type="button"
                     onClick={() => updateQuestion(qIndex, { image_url: '' })}
