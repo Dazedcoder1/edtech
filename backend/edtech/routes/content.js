@@ -183,107 +183,6 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
     }
 });
 
-// ============================================================
-// IMAGES (course thumbnails, quiz diagrams)
-// ============================================================
-//
-// The frontend has always called POST /api/content/upload-image — for course
-// thumbnails and for quiz question diagrams — but the route was never written,
-// so every one of those uploads 404'd.
-//
-// Images differ from other content in two ways that justify their own pair of
-// routes rather than reusing /upload:
-//   * they are not content_items and belong to no module, so they must not be
-//     inserted into that table or appended to modules.content_ids;
-//   * they are rendered with a plain <img src>, so the URL has to keep working
-//     indefinitely. A presigned R2 link would expire and silently break every
-//     thumbnail already saved in the database, which is why the upload returns
-//     a stable proxy URL served by the GET route below.
-
-const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp|avif|svg\+xml)$/i;
-const IMAGE_FOLDERS = new Set(["thumbnails", "quizzes", "misc"]);
-
-// POST /api/content/upload-image?folder=thumbnails
-router.post("/upload-image", authMiddleware, handleUpload(upload.single("file")), async (req, res) => {
-    try {
-        const file = req.file;
-        if (!file) return res.status(400).json({ error: "No file uploaded" });
-
-        if (!IMAGE_MIME.test(file.mimetype || "")) {
-            return res.status(400).json({
-                error: "That file is not a supported image (PNG, JPG, GIF, WEBP, AVIF or SVG).",
-            });
-        }
-
-        if (file.size > 10 * 1024 * 1024) {
-            return res.status(413).json({ error: "Image is too large. Maximum size is 10MB." });
-        }
-
-        // Whitelist the folder — it comes from the query string and is used to
-        // build the object key, so an unchecked value could write anywhere.
-        const requested = String(req.query.folder || "misc").toLowerCase();
-        const folder = IMAGE_FOLDERS.has(requested) ? requested : "misc";
-
-        const hash = crypto.createHash("sha256").update(file.buffer).digest("hex");
-        const extension = getFileExtension(file.originalname) || ".png";
-        const r2Key = `images/${folder}/${hash}${extension}`;
-
-        await r2Client.send(new PutObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME || R2_BUCKET_NAME,
-            Key: r2Key,
-            Body: file.buffer,
-            ContentType: file.mimetype,
-            CacheControl: "public, max-age=31536000, immutable",
-        }));
-
-        // Absolute, derived from the incoming request so it is correct both in
-        // local dev (localhost:3000) and behind the nginx proxy in production.
-        const imageUrl = `${req.protocol}://${req.get("host")}/api/content/image/${r2Key}`;
-
-        res.status(201).json({ success: true, imageUrl, key: r2Key });
-
-    } catch (err) {
-        console.error("Image upload error:", err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// GET /api/content/image/images/<folder>/<hash>.<ext>
-// Public on purpose: thumbnails appear on course cards shown to signed-out
-// visitors. Content is hash-addressed, so the key leaks nothing.
-// The wildcard must be named. This app runs Express 5, whose path-to-regexp v8
-// rejects a bare "/image/*" at startup with "Missing parameter name at index 8".
-// In Express 5 a named wildcard captures the remaining segments as an array.
-router.get("/image/*splat", async (req, res) => {
-    try {
-        const splat = req.params.splat;
-        const key = Array.isArray(splat) ? splat.join("/") : String(splat || "");
-
-        // Confine reads to the images/ prefix so this cannot be used to fetch
-        // paid course material out of the same bucket.
-        if (!key || !key.startsWith("images/") || key.includes("..")) {
-            return res.status(400).json({ error: "Invalid image path" });
-        }
-
-        const object = await r2Client.send(new GetObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME || R2_BUCKET_NAME,
-            Key: key,
-        }));
-
-        res.setHeader("Content-Type", object.ContentType || "image/png");
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-        if (object.ContentLength) res.setHeader("Content-Length", object.ContentLength);
-
-        object.Body.pipe(res);
-
-    } catch (err) {
-        if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NoSuchKey") {
-            return res.status(404).json({ error: "Image not found" });
-        }
-        console.error("Image fetch error:", err);
-        res.status(500).json({ error: err.message });
-    }
-});
 
 // GET /api/content
 router.get("/", async (req, res) => {
@@ -293,8 +192,130 @@ router.get("/", async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/folders/:folderId", (req, res) => {
-    res.status(200).json({ success: true, files: [] });
+// ============================================================
+// FOLDERS ("tabs" inside a module) + content ordering
+// ============================================================
+//
+// These five routes were dropped in the content.js rewrite (e068d4bf) and
+// replaced by a stub that returned an empty array. The UI still calls all of
+// them, so tabs stopped listing, could not be created, renamed, deleted or
+// moved between, and the up/down reorder arrows silently did nothing.
+
+// GET /api/content/folders/:moduleId  — list a module's tabs
+router.get("/folders/:moduleId", async (req, res) => {
+    try {
+        const result = await pool.query(
+            `SELECT * FROM folders WHERE module_id = $1 ORDER BY created_at ASC`,
+            [req.params.moduleId]
+        );
+        res.json({ success: true, folders: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// POST /api/content/folder  — create a tab
+router.post("/folder", authMiddleware, async (req, res) => {
+    const { module_id, title } = req.body;
+    if (!module_id || !title || !String(title).trim()) {
+        return res.status(400).json({ error: "module_id and a title are required" });
+    }
+    try {
+        const result = await pool.query(
+            `INSERT INTO folders (module_id, title) VALUES ($1, $2) RETURNING *`,
+            [module_id, String(title).trim()]
+        );
+        res.json({ success: true, folder: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT /api/content/bulk-move  — move items between tabs
+router.put("/bulk-move", authMiddleware, async (req, res) => {
+    const { content_ids, folder_id } = req.body;
+    if (!Array.isArray(content_ids) || content_ids.length === 0) {
+        return res.status(400).json({ error: "content_ids must be a non-empty array" });
+    }
+    try {
+        const result = await pool.query(
+            `UPDATE content_items SET folder_id = $2 WHERE id = ANY($1::uuid[]) RETURNING id, folder_id`,
+            [content_ids, folder_id || null]
+        );
+        res.json({ success: true, updated: result.rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// PUT /api/content/folder/:id  — rename a tab
+router.put("/folder/:id", authMiddleware, async (req, res) => {
+    try {
+        const { title } = req.body;
+        if (!title || !String(title).trim()) {
+            return res.status(400).json({ error: "A title is required" });
+        }
+        const result = await pool.query(
+            `UPDATE folders SET title = $1 WHERE id = $2 RETURNING *`,
+            [String(title).trim(), req.params.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Tab not found" });
+        }
+        res.json({ success: true, folder: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// DELETE /api/content/folder/:id  — delete a tab, keeping its contents
+router.delete("/folder/:id", authMiddleware, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // Detach first. Whether folders.id has ON DELETE CASCADE varies by how
+        // the table was created, and cascading here would destroy the
+        // educator's uploads rather than returning them to the General tab.
+        const moved = await client.query(
+            `UPDATE content_items SET folder_id = NULL WHERE folder_id = $1 RETURNING id`,
+            [req.params.id]
+        );
+
+        const deleted = await client.query(
+            `DELETE FROM folders WHERE id = $1 RETURNING id`,
+            [req.params.id]
+        );
+
+        await client.query("COMMIT");
+
+        if (deleted.rows.length === 0) {
+            return res.status(404).json({ error: "Tab not found" });
+        }
+        res.json({ success: true, message: "Folder deleted", movedToGeneral: moved.rows.length });
+    } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        res.status(500).json({ success: false, error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// PUT /api/content/:id/priority  — the up/down reorder arrows
+router.put("/:id/priority", authMiddleware, async (req, res) => {
+    try {
+        const { priority } = req.body;
+        const result = await pool.query(
+            `UPDATE content_items SET priority = $1 WHERE id = $2 RETURNING id, priority`,
+            [parseInt(priority, 10) || 0, req.params.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Content not found" });
+        }
+        res.json({ success: true, content: result.rows[0] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // GET /api/content/:id

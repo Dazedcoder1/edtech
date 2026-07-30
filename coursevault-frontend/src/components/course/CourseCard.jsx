@@ -3,6 +3,7 @@ import { Play, BookOpen, Lock } from 'lucide-react';
 import Badge from '../ui/Badge.jsx';
 import CircularProgress from '../ui/CircularProgress.jsx'; // <-- Imported the ring!
 import { getBgColor, getTagColor } from '../../utils/format.js';
+import { resolveMediaUrl } from '../../services/api.js';
 
 const formatPrice = (price) =>
   `₹${Number(price).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
@@ -39,7 +40,7 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
         <div className={`h-[120px] md:h-[200px] w-full border-b border-black ${bgColor} flex items-center justify-center relative overflow-hidden`}>
           {course.thumbnail_url ? (
             <img
-              src={course.thumbnail_url}
+              src={resolveMediaUrl(course.thumbnail_url)}
               alt={course.title}
               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
               // A stored URL that 404s would otherwise show the browser's

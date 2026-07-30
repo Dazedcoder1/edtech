@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import pool from "../config/database.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
+import { JWT_SECRET } from "../config/jwt.js";
 
 async function authMiddleware(req, res, next) {
   try {
@@ -135,8 +135,29 @@ async function authMiddleware(req, res, next) {
               
               req.contentId = contentId;
               req.contentTitle = content.title;
-              req.isContentCreator = (content.educator_id === req.user.id) || req.isCourseCreator;
+
+              // content_items.created_by must count as ownership.
+              //
+              // Without it, this middleware is stricter than the route handlers
+              // it guards — routes/content.js checks created_by and admin, but
+              // never gets the chance because the 403 is thrown here first.
+              //
+              // It also fails for content not yet linked to a module: the LEFT
+              // JOIN yields a NULL educator_id, so the person who uploaded the
+              // file cannot open it.
+              const isUploader =
+                  content.created_by &&
+                  String(content.created_by).toLowerCase() === String(req.user.id).toLowerCase();
+
+              req.isContentCreator =
+                  isUploader ||
+                  (content.educator_id === req.user.id) ||
+                  req.isCourseCreator ||
+                  req.user.role === 'admin';
+
               req.isPreviewContent = content.preview === true;
+
+              console.log(`   - created_by match: ${isUploader ? '✅ YES' : '❌ NO'}`);
               
               console.log(`   - Content title: ${content.title}`);
               console.log(`   - Content type: ${content.content_type}`);
@@ -148,9 +169,22 @@ async function authMiddleware(req, res, next) {
               // Verify active enrollment status if user isn't the creator or a preview customer
               if (!req.isContentCreator && !req.isPreviewContent && req.courseId) {
                   console.log(`   - Checking enrollment (non-creator, non-preview)...`);
+
+                  // Accept an enrolment on the parent course too. Content often
+                  // sits in a sub-course while the student enrolled in the
+                  // parent, and checking only the immediate course locks them
+                  // out of material they have paid for.
                   const enrollmentCheck = await pool.query(
-                      `SELECT id FROM enrollments 
-                       WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                      `SELECT e.id
+                       FROM enrollments e
+                       WHERE e.user_id = $1
+                         AND e.status = 'active'
+                         AND e.course_id IN (
+                             SELECT $2::uuid
+                             UNION
+                             SELECT parent_course_id FROM courses
+                              WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                         )`,
                       [req.user.id, req.courseId]
                   );
                   req.isEnrolled = enrollmentCheck.rows.length > 0;
