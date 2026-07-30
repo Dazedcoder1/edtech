@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UploadCloud, Image as ImageIcon, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
-import { fetchAPI } from '../../services/api';
+import { fetchAPI, BASE_URL } from '../../services/api';
 
 export default function CourseModal({ isOpen, onClose, course = null, onSave, parentCourseId = null }) {
   const [title, setTitle] = useState('');
@@ -48,7 +48,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       formData.append('file', file);
 
       const token = localStorage.getItem('token');
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/content/upload-image?folder=thumbnails`, {
+      const response = await fetch(`${BASE_URL}/content/upload-image?folder=thumbnails`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -57,8 +57,19 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Upload failed');
+        // A 404 here means the server has no upload-image route — surface that
+        // plainly instead of "Unexpected token < in JSON", which is what
+        // response.json() throws when the body is an HTML error page.
+        const raw = await response.text();
+        let message;
+        try {
+          message = JSON.parse(raw).error;
+        } catch {
+          message = response.status === 404
+            ? 'Upload endpoint not found. Restart the backend to pick up the new route.'
+            : `Upload failed (${response.status}).`;
+        }
+        throw new Error(message);
       }
 
       const data = await response.json();

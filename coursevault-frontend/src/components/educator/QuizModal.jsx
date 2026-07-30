@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Trash2, Image as ImageIcon, FileText } from 'lucide-react';
 import Button from '../ui/Button.jsx';
-import { fetchAPI } from '../../services/api.js';
+import { fetchAPI, BASE_URL } from '../../services/api.js';
 import MathInput from '../ui/MathInput.jsx';
 import DocxImportPanel from './DocxImportPanel.jsx';
 
@@ -92,7 +92,7 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
       formData.append('file', file);
 
       const token = localStorage.getItem('token');
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/content/upload-image?folder=quizzes`, {
+      const response = await fetch(`${BASE_URL}/content/upload-image?folder=quizzes`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -101,8 +101,16 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
       });
 
       if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Upload failed');
+        const raw = await response.text();
+        let message;
+        try {
+          message = JSON.parse(raw).error;
+        } catch {
+          message = response.status === 404
+            ? 'Upload endpoint not found. Restart the backend to pick up the new route.'
+            : `Upload failed (${response.status}).`;
+        }
+        throw new Error(message);
       }
 
       const data = await response.json();

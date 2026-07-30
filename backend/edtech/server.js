@@ -40,8 +40,10 @@ async function setupDatabase() {
                 email VARCHAR(255) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 name VARCHAR(255) NOT NULL,
+                phone VARCHAR(32),
                 role VARCHAR(50) DEFAULT 'student',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -232,6 +234,12 @@ async function setupDatabase() {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id ON quiz_attempts(user_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_quiz_answers_attempt_id ON quiz_answers(attempt_id)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_test_files_module_id ON test_files(module_id)`);
+
+        // CREATE TABLE IF NOT EXISTS does nothing to a table that already
+        // exists, so new columns need an explicit ALTER or every existing
+        // database silently lacks them.
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32)`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
 
         console.log("✅ Database schema ready");
     } catch (err) {

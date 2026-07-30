@@ -42,6 +42,16 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
               src={course.thumbnail_url}
               alt={course.title}
               className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+              // A stored URL that 404s would otherwise show the browser's
+              // broken-image glyph, which looks identical to "no thumbnail set"
+              // and hides the fact that something is actually wrong.
+              onError={(e) => {
+                console.warn('[CourseCard] thumbnail failed to load', {
+                  course: course.title,
+                  url: course.thumbnail_url,
+                });
+                e.currentTarget.style.display = 'none';
+              }}
             />
           ) : (
             <>

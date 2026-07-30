@@ -51,8 +51,20 @@ export const AuthProvider = ({ children }) => {
     navigate('/login');
   };
 
+  /**
+   * Apply a profile change coming back from the server.
+   *
+   * A new token accompanies name or email changes — the JWT carries both in
+   * its payload, so without swapping it the old values would stay in effect
+   * for the remaining seven days of its life.
+   */
+  const applyProfileUpdate = ({ user: updatedUser, token }) => {
+    if (token) localStorage.setItem('token', token);
+    if (updatedUser) setUser(updatedUser);
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, register, logout, loading, applyProfileUpdate }}>
       {!loading && children}
     </AuthContext.Provider>
   );

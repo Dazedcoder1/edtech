@@ -341,3 +341,15 @@
 .math-display .katex-display::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
 }
+/* Math that could not be rendered falls back to readable plain text rather
+   than KaTeX's red error output. Amber-on-cream signals "check this" without
+   the alarm of an error. */
+.math-fallback {
+  font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  font-size: 0.95em;
+  background: #FEF7E6;
+  border-bottom: 1px dotted #B45309;
+  color: #78350F;
+  padding: 0 2px;
+  border-radius: 2px;
+}

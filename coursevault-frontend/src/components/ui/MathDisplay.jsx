@@ -1,53 +1,43 @@
-import React, { useEffect, useRef } from 'react';
-import katex from 'katex';
-import { convertToLatex, isMathText } from '../../utils/mathRenderer';
+import React, { useMemo } from 'react';
+import { renderMixed } from '../../utils/mathRenderer';
 
-export default function MathDisplay({ 
-  text, 
+/**
+ * Renders text that may contain maths.
+ *
+ * Delegates to renderMixed, which keeps prose out of math mode. The previous
+ * implementation passed the whole string to KaTeX whenever it contained a
+ * backslash, caret or underscore — so a question like
+ *
+ *   "The principle value of \cos^{-1}(-1/2) is"
+ *
+ * rendered as "Theprinciplevalueof cos⁻¹(−½) is", because math mode italicises
+ * every letter as a variable and discards spaces between them.
+ */
+export default function MathDisplay({
+  text,
   displayMode = false,
   className = '',
-  fallback = null
 }) {
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    if (containerRef.current && text) {
-      // If it's math, render it
-      if (isMathText(text) || text.includes('^') || text.includes('_') || text.includes('\\')) {
-        try {
-          // Convert to LaTeX
-          const latex = convertToLatex(text);
-          
-          // Render with KaTeX
-          const html = katex.renderToString(latex, {
-            throwOnError: false,
-            displayMode: displayMode,
-            trust: true,
-            macros: {
-              "\\R": "\\mathbb{R}",
-            }
-          });
-          
-          // Set the HTML content
-          containerRef.current.innerHTML = html;
-        } catch (error) {
-          console.log('Render error:', error);
-          // If KaTeX fails, show the text
-          containerRef.current.textContent = text;
-        }
-      } else {
-        containerRef.current.textContent = text;
-      }
+  const html = useMemo(() => {
+    if (!text) return '';
+    try {
+      return renderMixed(text);
+    } catch (error) {
+      console.warn('[MathDisplay] render failed; showing plain text', error);
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
     }
-  }, [text, displayMode]);
+  }, [text]);
 
   if (!text) return null;
 
   return (
-    <span 
-      ref={containerRef}
+    <span
       className={`math-display ${className}`}
-      style={{ display: displayMode ? 'block' : 'inline-block' }}
+      style={{ display: displayMode ? 'block' : 'inline' }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

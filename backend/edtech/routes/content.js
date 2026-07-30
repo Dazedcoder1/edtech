@@ -183,6 +183,108 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
     }
 });
 
+// ============================================================
+// IMAGES (course thumbnails, quiz diagrams)
+// ============================================================
+//
+// The frontend has always called POST /api/content/upload-image — for course
+// thumbnails and for quiz question diagrams — but the route was never written,
+// so every one of those uploads 404'd.
+//
+// Images differ from other content in two ways that justify their own pair of
+// routes rather than reusing /upload:
+//   * they are not content_items and belong to no module, so they must not be
+//     inserted into that table or appended to modules.content_ids;
+//   * they are rendered with a plain <img src>, so the URL has to keep working
+//     indefinitely. A presigned R2 link would expire and silently break every
+//     thumbnail already saved in the database, which is why the upload returns
+//     a stable proxy URL served by the GET route below.
+
+const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp|avif|svg\+xml)$/i;
+const IMAGE_FOLDERS = new Set(["thumbnails", "quizzes", "misc"]);
+
+// POST /api/content/upload-image?folder=thumbnails
+router.post("/upload-image", authMiddleware, handleUpload(upload.single("file")), async (req, res) => {
+    try {
+        const file = req.file;
+        if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+        if (!IMAGE_MIME.test(file.mimetype || "")) {
+            return res.status(400).json({
+                error: "That file is not a supported image (PNG, JPG, GIF, WEBP, AVIF or SVG).",
+            });
+        }
+
+        if (file.size > 10 * 1024 * 1024) {
+            return res.status(413).json({ error: "Image is too large. Maximum size is 10MB." });
+        }
+
+        // Whitelist the folder — it comes from the query string and is used to
+        // build the object key, so an unchecked value could write anywhere.
+        const requested = String(req.query.folder || "misc").toLowerCase();
+        const folder = IMAGE_FOLDERS.has(requested) ? requested : "misc";
+
+        const hash = crypto.createHash("sha256").update(file.buffer).digest("hex");
+        const extension = getFileExtension(file.originalname) || ".png";
+        const r2Key = `images/${folder}/${hash}${extension}`;
+
+        await r2Client.send(new PutObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME || R2_BUCKET_NAME,
+            Key: r2Key,
+            Body: file.buffer,
+            ContentType: file.mimetype,
+            CacheControl: "public, max-age=31536000, immutable",
+        }));
+
+        // Absolute, derived from the incoming request so it is correct both in
+        // local dev (localhost:3000) and behind the nginx proxy in production.
+        const imageUrl = `${req.protocol}://${req.get("host")}/api/content/image/${r2Key}`;
+
+        res.status(201).json({ success: true, imageUrl, key: r2Key });
+
+    } catch (err) {
+        console.error("Image upload error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/content/image/images/<folder>/<hash>.<ext>
+// Public on purpose: thumbnails appear on course cards shown to signed-out
+// visitors. Content is hash-addressed, so the key leaks nothing.
+// The wildcard must be named. This app runs Express 5, whose path-to-regexp v8
+// rejects a bare "/image/*" at startup with "Missing parameter name at index 8".
+// In Express 5 a named wildcard captures the remaining segments as an array.
+router.get("/image/*splat", async (req, res) => {
+    try {
+        const splat = req.params.splat;
+        const key = Array.isArray(splat) ? splat.join("/") : String(splat || "");
+
+        // Confine reads to the images/ prefix so this cannot be used to fetch
+        // paid course material out of the same bucket.
+        if (!key || !key.startsWith("images/") || key.includes("..")) {
+            return res.status(400).json({ error: "Invalid image path" });
+        }
+
+        const object = await r2Client.send(new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME || R2_BUCKET_NAME,
+            Key: key,
+        }));
+
+        res.setHeader("Content-Type", object.ContentType || "image/png");
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        if (object.ContentLength) res.setHeader("Content-Length", object.ContentLength);
+
+        object.Body.pipe(res);
+
+    } catch (err) {
+        if (err?.$metadata?.httpStatusCode === 404 || err?.name === "NoSuchKey") {
+            return res.status(404).json({ error: "Image not found" });
+        }
+        console.error("Image fetch error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // GET /api/content
 router.get("/", async (req, res) => {
     try {
