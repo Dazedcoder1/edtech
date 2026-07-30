@@ -17,12 +17,59 @@ const TEMP_VIDEO_DIR = path.join(__dirname, "../temp_videos");
 
 if (!fs.existsSync(TEMP_VIDEO_DIR)) fs.mkdirSync(TEMP_VIDEO_DIR, { recursive: true });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+// Small assets (PDFs/images) stay in memory — fine at these sizes.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// 🚀 RESTORED: Videos stream straight to disk instead of buffering into RAM.
+// At 3GB, memoryStorage would need 3GB of RAM per concurrent upload — this
+// was reverted back to memoryStorage/500MB at some point and needs to stay
+// disk-based for large uploads to be safe.
+const videoUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, TEMP_VIDEO_DIR),
+        filename: (req, file, cb) => cb(null, `raw_${crypto.randomUUID()}${getFileExtension(file.originalname)}`)
+    }),
+    limits: { fileSize: 3 * 1024 * 1024 * 1024 } // 3GB Limit for videos
+});
+
 const activeJobs = new Map();
 
+// Streaming SHA-256 hash for disk-based files (videos) — avoids reading the
+// whole file into memory just to hash it.
+function hashFileFromDisk(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256');
+        const stream = fs.createReadStream(filePath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', () => resolve(hash.digest('hex')));
+        stream.on('error', reject);
+    });
+}
+
+// Wraps a multer middleware so upload errors (file too large, wrong
+// field, etc.) return clean JSON instead of an unhandled exception.
+function handleUpload(multerMiddleware, maxSizeBytes) {
+    return (req, res, next) => {
+        multerMiddleware(req, res, (err) => {
+            if (err) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(413).json({
+                        success: false,
+                        error: `File too large. Max allowed size is ${(maxSizeBytes / (1024 * 1024)).toFixed(0)} MB.`
+                    });
+                }
+                return res.status(400).json({ success: false, error: err.message });
+            }
+            next();
+        });
+    };
+}
+
 // POST /api/content/upload
-router.post("/upload", authMiddleware, upload.single("file"), async (req, res) => {
+router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 1024 * 1024), async (req, res) => {
     try {
+        // 🚀 RESTORED: check both body and query for moduleId.
+        const moduleId = req.body.moduleId || req.query.moduleId;
         const { title, description, content_type, preview } = req.body;
         const file = req.file;
         const userId = req.user.id || req.user.userId || req.user.sub;
@@ -35,16 +82,21 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
         const extension = getFileExtension(file.originalname);
         const mimeType = getMimeType(file.originalname);
 
-        const existing = await pool.query(`SELECT * FROM content_items WHERE file_hash = $1`, [fileHash]);
+        // 🚀 RESTORED: Only ACTIVE rows count as a real duplicate. A soft-deleted
+        // row (is_active = false) with a matching hash must not short-circuit
+        // the upload — that returns a dead, unopenable "duplicate" forever.
+        const existing = await pool.query(
+            `SELECT * FROM content_items WHERE file_hash = $1 AND is_active = true`,
+            [fileHash]
+        );
         if (existing.rows.length > 0) {
-            // 🌟 LINK TO MODULE EVEN IF DUPLICATE
             const contentId = existing.rows[0].id;
-            if (req.query.moduleId) {
+            if (moduleId) {
                 await pool.query(`
                     UPDATE modules 
                     SET content_ids = array_append(content_ids, $1::uuid) 
                     WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
-                `, [contentId, req.query.moduleId]);
+                `, [contentId, moduleId]);
             }
             return res.status(200).json({ success: true, message: "File already exists.", content: existing.rows[0], isDuplicate: true });
         }
@@ -60,13 +112,12 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
 
         const contentId = result.rows[0].id;
 
-        // 🌟 LINK FRESH UPLOAD TO MODULE
-        if (req.query.moduleId) {
+        if (moduleId) {
             await pool.query(`
                 UPDATE modules 
                 SET content_ids = array_append(content_ids, $1::uuid) 
                 WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
-            `, [contentId, req.query.moduleId]);
+            `, [contentId, moduleId]);
         }
 
         res.status(201).json({ success: true, content: result.rows[0] });
@@ -75,84 +126,60 @@ router.post("/upload", authMiddleware, upload.single("file"), async (req, res) =
     }
 });
 
-// POST /api/content/upload-image
-router.post("/upload-image", authMiddleware, upload.single("file"), async (req, res) => {
-    try {
-        const file = req.file;
-        const folder = (req.query.folder || "misc").replace(/[^a-zA-Z0-9_-]/g, "");
-
-        if (req.user.role !== 'educator' && req.user.role !== 'admin') return res.status(403).json({ error: "Only educators can upload images" });
-        if (!file || !file.mimetype.startsWith("image/")) return res.status(400).json({ error: "Only image files are allowed" });
-
-        const fileHash = generateFileHash(file.buffer);
-        const extension = getFileExtension(file.originalname) || ".jpg";
-        const r2Key = `images/${folder}/${fileHash}${extension}`;
-
-        await r2Client.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: r2Key, Body: file.buffer, ContentType: file.mimetype }));
-        res.status(201).json({ success: true, imageUrl: `/api/content/stream-image?key=${encodeURIComponent(r2Key)}`, key: r2Key });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// GET /api/content/stream-image
-router.get("/stream-image", async (req, res) => {
-    try {
-        const { key } = req.query;
-        if (!key || !key.startsWith("images/")) return res.status(400).json({ error: "Invalid image key" });
-
-        const r2Response = await r2Client.send(new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
-        const chunks = [];
-        for await (const chunk of r2Response.Body) chunks.push(chunk);
-        const imageBuffer = Buffer.concat(chunks);
-
-        res.setHeader("Content-Type", r2Response.ContentType || "image/jpeg");
-        res.setHeader("Content-Length", imageBuffer.length);
-        res.setHeader("Cache-Control", "public, max-age=86400");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.send(imageBuffer);
-    } catch (err) {
-        res.status(404).json({ error: "Image not found" });
-    }
-});
-
-router.options("/stream-image", (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.status(200).end();
-});
-
 // POST /api/content/upload-video
-router.post("/upload-video", authMiddleware, upload.single("file"), async (req, res) => {
+router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("file"), 3 * 1024 * 1024 * 1024), async (req, res) => {
+    // Track the raw disk path Multer wrote to, so it can be cleaned up on any early-exit path.
+    let rawDiskPath = null;
     try {
+        // 🚀 RESTORED: check both body and query for moduleId. VideoUploadModal
+        // sends this as a FormData body field, not a query string — without
+        // this fallback, videos uploaded through that modal succeed but never
+        // get linked into any module's content_ids array.
+        const moduleId = req.body.moduleId || req.query.moduleId;
         const { title, description, preview } = req.body;
         const file = req.file;
         const userId = req.user.id || req.user.userId || req.user.sub;
 
-        if (req.user.role !== 'educator' && req.user.role !== 'admin') return res.status(403).json({ error: "Only educators can upload videos" });
-        if (!file || !title || !file.mimetype.startsWith("video/")) return res.status(400).json({ error: "Invalid video upload" });
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            if (file) fs.unlinkSync(file.path);
+            return res.status(403).json({ error: "Only educators can upload videos" });
+        }
+        if (!file) return res.status(400).json({ error: "No file uploaded" });
+        rawDiskPath = file.path;
 
-        const fileHash = generateFileHash(file.buffer);
+        if (!title || !file.mimetype.startsWith("video/")) {
+            fs.unlinkSync(rawDiskPath);
+            return res.status(400).json({ error: "Invalid video upload" });
+        }
+
+        // 🚀 RESTORED: File already lives on disk — hash it by streaming
+        // instead of loading a buffer, so a 3GB file never sits in RAM.
+        const fileHash = await hashFileFromDisk(rawDiskPath);
         const extension = getFileExtension(file.originalname);
-        const tempFilePath = path.join(TEMP_VIDEO_DIR, `${fileHash}${extension}`);
-        
-        fs.writeFileSync(tempFilePath, file.buffer);
 
-        const existing = await pool.query(`SELECT * FROM content_items WHERE file_hash = $1`, [fileHash]);
+        // 🚀 RESTORED: Only ACTIVE rows count as a real duplicate.
+        const existing = await pool.query(
+            `SELECT * FROM content_items WHERE file_hash = $1 AND is_active = true`,
+            [fileHash]
+        );
         if (existing.rows.length > 0) {
-            // 🌟 LINK TO MODULE EVEN IF DUPLICATE
+            fs.unlinkSync(rawDiskPath);
             const contentId = existing.rows[0].id;
-            if (req.query.moduleId) {
+            if (moduleId) {
                 await pool.query(`
                     UPDATE modules 
                     SET content_ids = array_append(content_ids, $1::uuid) 
                     WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
-                `, [contentId, req.query.moduleId]);
+                `, [contentId, moduleId]);
             }
             return res.status(200).json({ success: true, message: "Video already exists.", content: existing.rows[0], isDuplicate: true });
         }
-        
+
+        // Rename to the hash-based name transcodeVideo/cleanup expects.
+        const tempFilePath = path.join(TEMP_VIDEO_DIR, `${fileHash}${extension}`);
+        fs.renameSync(rawDiskPath, tempFilePath);
+        rawDiskPath = null; // ownership moved to tempFilePath now
+
         const result = await pool.query(`
             INSERT INTO content_items (
                 title, description, content_type, file_hash, file_name, file_size_bytes, mime_type,
@@ -162,13 +189,12 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
 
         const contentId = result.rows[0].id;
 
-        // 🌟 LINK FRESH UPLOAD TO MODULE
-        if (req.query.moduleId) {
+        if (moduleId) {
             await pool.query(`
                 UPDATE modules 
                 SET content_ids = array_append(content_ids, $1::uuid) 
                 WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
-            `, [contentId, req.query.moduleId]);
+            `, [contentId, moduleId]);
         }
         
         transcodeVideo(contentId, tempFilePath, fileHash, title, [
@@ -179,6 +205,10 @@ router.post("/upload-video", authMiddleware, upload.single("file"), async (req, 
 
         res.status(202).json({ success: true, message: "Video uploaded. Processing in background.", content: { id: contentId, title, content_type: "video", status: "processing" } });
     } catch (err) {
+        console.error("Video Upload error:", err);
+        if (rawDiskPath && fs.existsSync(rawDiskPath)) {
+            try { fs.unlinkSync(rawDiskPath); } catch (_) {}
+        }
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -204,7 +234,7 @@ const IMAGE_MIME = /^image\/(png|jpe?g|gif|webp|avif|svg\+xml)$/i;
 const IMAGE_FOLDERS = new Set(["thumbnails", "quizzes", "misc"]);
 
 // POST /api/content/upload-image?folder=thumbnails
-router.post("/upload-image", authMiddleware, handleUpload(upload.single("file")), async (req, res) => {
+router.post("/upload-image", authMiddleware, handleUpload(upload.single("file"), 10 * 1024 * 1024), async (req, res) => {
     try {
         const file = req.file;
         if (!file) return res.status(400).json({ error: "No file uploaded" });
@@ -438,19 +468,25 @@ router.put("/:id", authMiddleware, async (req, res) => {
         const { id } = req.params;
         const { title, description, preview } = req.body;
         const userId = req.user.id || req.user.userId || req.user.sub;
-        
-        const contentCheck = await pool.query(`
-            SELECT ci.*, c.educator_id 
-            FROM content_items ci
-            JOIN modules m ON ci.id = ANY(m.content_ids)
-            JOIN courses c ON m.course_id = c.id
-            WHERE ci.id = $1
-            LIMIT 1
-        `, [id]);
-        
-        if (contentCheck.rows.length === 0) return res.status(404).json({ error: "Content not found" });
-        
-        if (String(contentCheck.rows[0].educator_id) !== String(userId)) {
+
+        const contentRow = await pool.query(`SELECT * FROM content_items WHERE id = $1`, [id]);
+        if (contentRow.rows.length === 0) return res.status(404).json({ error: "Content not found" });
+        const content = contentRow.rows[0];
+
+        // 🚀 RESTORED: check ownership directly against content_items.created_by
+        // first. The JOIN-through-modules check alone 404s for any content item
+        // that isn't (yet) linked into a module's content_ids array — the exact
+        // bug this fallback exists to prevent.
+        let isOwner = content.created_by && String(content.created_by).toLowerCase() === String(userId).toLowerCase();
+        if (!isOwner) {
+            const courseCheck = await pool.query(`
+                SELECT c.educator_id 
+                FROM modules m JOIN courses c ON m.course_id = c.id
+                WHERE $1::uuid = ANY(m.content_ids) LIMIT 1
+            `, [id]);
+            isOwner = courseCheck.rows.length > 0 && String(courseCheck.rows[0].educator_id) === String(userId);
+        }
+        if (!isOwner && req.user.role !== 'admin') {
             return res.status(403).json({ error: "Only course creator can update content" });
         }
         
@@ -468,7 +504,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
         }
         if (preview !== undefined) {
             updateFields.push(`preview = $${paramCounter++}`);
-            values.push(preview);
+            values.push(preview === 'true' || preview === true);
         }
         
         if (updateFields.length === 0) return res.status(400).json({ error: "No fields to update" });
@@ -497,19 +533,22 @@ router.delete("/:id", authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
         const userId = req.user.id || req.user.userId || req.user.sub;
-        
-        const contentCheck = await pool.query(`
-            SELECT c.educator_id 
-            FROM content_items ci
-            JOIN modules m ON ci.id = ANY(m.content_ids)
-            JOIN courses c ON m.course_id = c.id
-            WHERE ci.id = $1
-            LIMIT 1
-        `, [id]);
-        
-        if (contentCheck.rows.length === 0) return res.status(404).json({ error: "Content not found" });
-        
-        if (String(contentCheck.rows[0].educator_id) !== String(userId)) {
+
+        const contentRow = await pool.query(`SELECT * FROM content_items WHERE id = $1`, [id]);
+        if (contentRow.rows.length === 0) return res.status(404).json({ error: "Content not found" });
+        const content = contentRow.rows[0];
+
+        // 🚀 RESTORED: same direct-ownership fallback as PUT above.
+        let isOwner = content.created_by && String(content.created_by).toLowerCase() === String(userId).toLowerCase();
+        if (!isOwner) {
+            const courseCheck = await pool.query(`
+                SELECT c.educator_id 
+                FROM modules m JOIN courses c ON m.course_id = c.id
+                WHERE $1::uuid = ANY(m.content_ids) LIMIT 1
+            `, [id]);
+            isOwner = courseCheck.rows.length > 0 && String(courseCheck.rows[0].educator_id) === String(userId);
+        }
+        if (!isOwner && req.user.role !== 'admin') {
             return res.status(403).json({ error: "Only course creator can delete content" });
         }
         
@@ -547,11 +586,29 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
         let actualDuration = duration;
+        let ffprobeOk = true;
         await new Promise((resolve) => {
-            const ffprobe = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath]);
-            ffprobe.stdout.on("data", d => { actualDuration = Math.round(parseFloat(d.toString())); });
+            let ffprobe;
+            try {
+                ffprobe = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath]);
+            } catch (spawnErr) {
+                console.error("❌ ffprobe failed to start:", spawnErr.message);
+                ffprobeOk = false;
+                return resolve();
+            }
+            ffprobe.stdout.on("data", d => { actualDuration = Math.round(parseFloat(d.toString())) || actualDuration; });
+            // Without this handler, a missing ffprobe binary crashes the whole process.
+            ffprobe.on("error", (err) => {
+                console.error("❌ ffprobe spawn error — is FFmpeg installed and on PATH?", err.message);
+                ffprobeOk = false;
+                resolve();
+            });
             ffprobe.on("close", resolve);
         });
+
+        if (!ffprobeOk) {
+            throw new Error("FFprobe is not available (not installed or not on PATH). Cannot process video.");
+        }
 
         for (const { name: resName, scale, bitrate } of resolutions) {
             const qualityDir = path.join(outputDir, resName);
@@ -562,27 +619,47 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
 
             console.log(`\n🎬 Transcoding ${resName}...`);
 
+            let lastLoggedFrame = 0;
             await new Promise((resolve, reject) => {
-                const ffmpeg = spawn("ffmpeg", [
-                    "-i", inputPath,
-                    "-vf", `scale=${scale}`,
-                    "-c:v", "libx264", "-preset", "medium",
-                    "-b:v", bitrate, "-maxrate", bitrate,
-                    "-bufsize", `${parseInt(bitrate) * 2}k`,
-                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
-                    "-f", "hls",
-                    "-hls_time", "10",
-                    "-hls_list_size", "0",
-                    "-hls_segment_type", "mpegts",
-                    "-hls_segment_filename", segmentPattern,
-                    playlistPath
-                ]);
+                let ffmpeg;
+                try {
+                    ffmpeg = spawn("ffmpeg", [
+                        "-i", inputPath,
+                        "-vf", `scale=${scale}`,
+                        "-c:v", "libx264", "-preset", "medium",
+                        "-b:v", bitrate, "-maxrate", bitrate,
+                        "-bufsize", `${parseInt(bitrate) * 2}k`,
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+                        "-f", "hls",
+                        "-hls_time", "10",
+                        "-hls_list_size", "0",
+                        "-hls_segment_type", "mpegts",
+                        "-hls_segment_filename", segmentPattern,
+                        playlistPath
+                    ]);
+                } catch (spawnErr) {
+                    return reject(new Error(`ffmpeg failed to start: ${spawnErr.message}`));
+                }
+
+                ffmpeg.stderr.on("data", (data) => {
+                    const match = data.toString().match(/frame=\s*(\d+)/);
+                    if (match) {
+                        const currentFrame = parseInt(match[1]);
+                        if (currentFrame - lastLoggedFrame >= 500) {
+                            console.log(`   🎬 ${resName}: frame ${currentFrame}`);
+                            lastLoggedFrame = currentFrame;
+                        }
+                    }
+                });
 
                 ffmpeg.on("close", (code) => {
                     if (code === 0) resolve();
                     else reject(new Error(`ffmpeg exited ${code} for ${resName}`));
                 });
-                ffmpeg.on("error", reject);
+                // Without this handler, a missing ffmpeg binary crashes the whole process.
+                ffmpeg.on("error", (err) => {
+                    reject(new Error(`ffmpeg spawn error: ${err.message}. Is FFmpeg installed and on PATH?`));
+                });
             });
 
             const allFiles = fs.readdirSync(qualityDir).sort();
@@ -593,7 +670,7 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                 await r2Client.send(new PutObjectCommand({
                     Bucket: R2_BUCKET_NAME,
                     Key: `${r2BasePath}/${resName}/${seg}`,
-                    Body: fs.readFileSync(filePath),
+                    Body: fs.createReadStream(filePath),
                     ContentType: "video/mp2t"
                 }));
                 fs.unlinkSync(filePath);
@@ -603,7 +680,7 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                 await r2Client.send(new PutObjectCommand({
                     Bucket: R2_BUCKET_NAME,
                     Key: `${r2BasePath}/${resName}/index.m3u8`,
-                    Body: fs.readFileSync(playlistPath),
+                    Body: fs.createReadStream(playlistPath),
                     ContentType: "application/vnd.apple.mpegurl"
                 }));
             }
