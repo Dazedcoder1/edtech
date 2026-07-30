@@ -6,6 +6,7 @@ import MyLearningPage from './pages/MyLearningPage.jsx';
 import CourseDetailPage from './pages/CourseDetailPage.jsx';
 import EducatorDashboardPage from './pages/EducatorDashboardPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
+import ProfilePage from './pages/ProfilePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 
 // NEW: Import the security wrapper
@@ -45,6 +46,9 @@ export default function App() {
               
               {/* Common Course View */}
               <Route path="/course/:id" element={<CourseDetailPage />} />
+
+              {/* Any signed-in user — students and educators both. */}
+              <Route path="/profile" element={<ProfilePage />} />
             </Route>
             
             {/* Catch-all Redirect */}

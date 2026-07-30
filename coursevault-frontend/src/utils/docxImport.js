@@ -168,7 +168,62 @@ export function parseNumbering(numberingXml) {
 }
 
 /**
- * @returns {{paragraphs: Array<{text: string, listFormat: string|null}>, mathCount: number}}
+ * Collect the character formatting of a paragraph's visible runs.
+ *
+ * Educators mark the correct answer visually rather than writing "Ans: C", so
+ * this is the answer key. Only runs with actual text count — Word leaves
+ * plenty of empty runs carrying stale formatting.
+ */
+function paragraphMarks(p) {
+  const colors = new Set();
+  let highlight = null;
+  let shading = null;
+  let bold = false;
+  let underline = false;
+
+  // Both run flavours matter. An option that is pure maths has no <w:r> at
+  // all — its text is in <m:t> inside <m:r>, and the highlight that marks it
+  // as the correct answer sits on that run's <w:rPr>. Looking only at <w:r>
+  // finds the answer key for prose options and misses it for every formula.
+  const runs = [];
+  const collectRuns = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    const name = localName(node);
+    if (name === 'r') runs.push(node);
+    for (const child of Array.from(node.childNodes)) collectRuns(child);
+  };
+  collectRuns(p);
+
+  for (const run of runs) {
+    const text = Array.from(run.childNodes)
+      .filter((n) => n.nodeType === 1 && localName(n) === 't')
+      .map((t) => t.textContent || '')
+      .join('');
+    if (!text.trim()) continue;
+
+    const props = Array.from(run.childNodes).find(
+      (n) => n.nodeType === 1 && localName(n) === 'rpr' && (n.nodeName || '').startsWith('w:')
+    );
+    if (!props) continue;
+
+    const hl = props.getElementsByTagName('w:highlight')[0]?.getAttribute('w:val');
+    if (hl && hl !== 'none') highlight = hl;
+
+    const shd = props.getElementsByTagName('w:shd')[0]?.getAttribute('w:fill');
+    if (shd && shd !== 'auto' && shd !== 'FFFFFF') shading = shd;
+
+    const color = props.getElementsByTagName('w:color')[0]?.getAttribute('w:val');
+    if (color && color !== 'auto' && color !== '000000') colors.add(color.toUpperCase());
+
+    if (props.getElementsByTagName('w:b')[0]) bold = true;
+    if (props.getElementsByTagName('w:u')[0]) underline = true;
+  }
+
+  return { highlight, shading, colors: [...colors], bold, underline };
+}
+
+/**
+ * @returns {{paragraphs: Array<{text: string, listFormat: string|null, marks: object}>, mathCount: number}}
  */
 export function parseDocumentXml(xml, numberingFormats = new Map()) {
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -185,7 +240,7 @@ export function parseDocumentXml(xml, numberingFormats = new Map()) {
     const numId = numPr?.getElementsByTagName('w:numId')[0]?.getAttribute('w:val');
     const listFormat = numId ? numberingFormats.get(numId) ?? null : null;
 
-    paragraphs.push({ text, listFormat });
+    paragraphs.push({ text, listFormat, marks: paragraphMarks(p) });
   }
 
   const mathCount =
@@ -214,6 +269,61 @@ const ANSWER_RE = /^\s*(?:Ans(?:wer)?|Sol(?:ution)?)\s*[:.)-]?\s*(.*)$/i;
 const OPTION_FORMATS = new Set(['upperLetter', 'lowerLetter', 'upperRoman', 'lowerRoman']);
 const QUESTION_FORMATS = new Set(['decimal', 'decimalZero', 'ordinal']);
 
+/**
+ * Work out which option an educator marked as correct, from formatting alone.
+ *
+ * The rule is *relative*, never absolute. In these papers every question stem
+ * is green and bold, so "bold means correct" would tag everything. What
+ * actually identifies the answer is an option that looks different from its
+ * own siblings — usually a yellow highlight, sometimes a unique colour.
+ *
+ * Signals are tried strongest-first, and each one only counts when it singles
+ * out exactly one option. Ambiguity returns null so the UI can ask rather than
+ * guess, because a wrong answer key is worse than no answer key.
+ *
+ * @returns {{index: number, reason: string} | null}
+ */
+export function detectCorrectOption(optionMarks) {
+  if (!optionMarks || optionMarks.length < 2) return null;
+
+  const uniqueBy = (predicate, reason) => {
+    const hits = [];
+    optionMarks.forEach((m, i) => {
+      if (m && predicate(m)) hits.push(i);
+    });
+    return hits.length === 1 ? { index: hits[0], reason } : null;
+  };
+
+  // 1. Highlighter pen — the clearest possible intent.
+  const highlighted = uniqueBy((m) => !!m.highlight, 'highlighted');
+  if (highlighted) return highlighted;
+
+  // 2. Cell/character shading.
+  const shaded = uniqueBy((m) => !!m.shading, 'shaded');
+  if (shaded) return shaded;
+
+  // 3. A colour that only one option uses.
+  const counts = new Map();
+  for (const m of optionMarks) {
+    for (const c of m?.colors || []) counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const soloColors = [...counts.entries()].filter(([, n]) => n === 1).map(([c]) => c);
+  if (soloColors.length === 1) {
+    const colored = uniqueBy((m) => (m.colors || []).includes(soloColors[0]), 'colour');
+    if (colored) return colored;
+  }
+
+  // Bold and underline are deliberately NOT used.
+  //
+  // They looked tempting but produce false answer keys. In the determinants
+  // paper, bold on a trailing "[2022 Series-C]" reference singled out option A
+  // for det(A⁻¹) — where the correct answer is B, 1/det(A). Bold is applied
+  // for emphasis, headings and citations far more often than for answers, and
+  // a confidently wrong answer key is worse than none: the educator would have
+  // no reason to look at it again.
+  return null;
+}
+
 export function segmentQuestions(paragraphs) {
   const questions = [];
   const unmatched = [];
@@ -222,6 +332,15 @@ export function segmentQuestions(paragraphs) {
   const flush = () => {
     if (!current) return;
     current.question_text = current.question_text.trim();
+
+    // Answer key from formatting, decided per question against its own options.
+    const detected = detectCorrectOption(current._optionMarks);
+    if (detected) {
+      current.correct_option_index = detected.index;
+      current.answer_source = detected.reason;
+    }
+    delete current._optionMarks;
+
     if (current.question_text) questions.push(current);
     current = null;
   };
@@ -233,7 +352,9 @@ export function segmentQuestions(paragraphs) {
       question_text: text.trim(),
       options: [],
       correct_option_index: 0,
+      answer_source: null,
       image_url: '',
+      _optionMarks: [],
     };
   };
 
@@ -241,6 +362,7 @@ export function segmentQuestions(paragraphs) {
     // Accept both shapes so the function stays testable with plain strings.
     const text = typeof para === 'string' ? para : para.text;
     const fmt = typeof para === 'string' ? null : para.listFormat;
+    const marks = typeof para === 'string' ? null : para.marks;
     if (!text) continue;
 
     // "Answer: C" — record it and point correct_option_index at that option.
@@ -259,6 +381,7 @@ export function segmentQuestions(paragraphs) {
     if (fmt && OPTION_FORMATS.has(fmt)) {
       if (current && current.options.length < 8) {
         current.options.push(text.trim());
+        current._optionMarks.push(marks);
       } else {
         unmatched.push(text);
       }
@@ -274,6 +397,7 @@ export function segmentQuestions(paragraphs) {
     const option = text.match(OPTION_RE);
     if (option && current && current.options.length < 8) {
       current.options.push(option[2].trim());
+      current._optionMarks.push(marks);
       continue;
     }
 
@@ -324,6 +448,7 @@ export async function importDocx(file) {
       equations: mathCount,
       questions: questions.length,
       skipped: unmatched.length,
+      answersDetected: questions.filter((q) => q.answer_source).length,
     },
   };
 }

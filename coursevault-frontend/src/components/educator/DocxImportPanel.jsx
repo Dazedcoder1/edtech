@@ -132,9 +132,18 @@ export default function DocxImportPanel({ onImport, onCancel }) {
             </span>
           )}
         </p>
-        <p className="text-xs mt-1 font-bold">
-          Check the correct answer for each — Word files rarely mark it.
-        </p>
+        {result.stats.answersDetected > 0 ? (
+          <p className="text-xs mt-1 font-bold text-green-800">
+            ✓ Answer key found for {result.stats.answersDetected} of{' '}
+            {result.stats.questions} — read from the highlighting in your document.
+            {result.stats.answersDetected < result.stats.questions &&
+              ' Set the rest by hand.'}
+          </p>
+        ) : (
+          <p className="text-xs mt-1 font-bold">
+            No answer highlighting found — set the correct answer for each below.
+          </p>
+        )}
       </div>
 
       <div className="overflow-y-auto p-4 flex flex-col gap-3">
@@ -160,25 +169,40 @@ export default function DocxImportPanel({ onImport, onCancel }) {
 
                 {q.options.length > 0 ? (
                   <div className="mt-2 flex flex-col gap-1">
-                    {q.options.map((opt, oi) => (
-                      <label
-                        key={oi}
-                        className="flex items-start gap-2 text-xs cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5"
-                      >
-                        <input
-                          type="radio"
-                          name={`imp-correct-${i}`}
-                          checked={q.correct_option_index === oi}
-                          onChange={() => setCorrect(i, oi)}
-                          disabled={!q.include}
-                          className="mt-0.5 w-3.5 h-3.5 accent-[#F26B4D] shrink-0"
-                        />
-                        <span className="text-gray-400 font-bold">{'ABCD'[oi] || oi + 1}</span>
-                        <span className="min-w-0">
-                          <MathText text={opt} />
-                        </span>
-                      </label>
-                    ))}
+                    {q.options.map((opt, oi) => {
+                      const isCorrect = q.correct_option_index === oi;
+                      const fromDoc = isCorrect && q.answer_source;
+                      return (
+                        <label
+                          key={oi}
+                          className={`flex items-start gap-2 text-xs cursor-pointer rounded px-1 py-0.5 transition-colors ${
+                            fromDoc
+                              ? 'bg-green-100 border border-green-400'
+                              : isCorrect
+                              ? 'bg-orange-50'
+                              : 'hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name={`imp-correct-${i}`}
+                            checked={isCorrect}
+                            onChange={() => setCorrect(i, oi)}
+                            disabled={!q.include}
+                            className="mt-0.5 w-3.5 h-3.5 accent-[#F26B4D] shrink-0"
+                          />
+                          <span className="text-gray-400 font-bold">{'ABCD'[oi] || oi + 1}</span>
+                          <span className="min-w-0">
+                            <MathText text={opt} />
+                          </span>
+                          {fromDoc && (
+                            <span className="ml-auto shrink-0 text-[10px] font-bold text-green-700 uppercase">
+                              from doc
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="mt-1 text-xs text-amber-700">
@@ -231,7 +255,7 @@ export default function DocxImportPanel({ onImport, onCancel }) {
           disabled={selected.length === 0}
           onClick={() =>
             onImport(
-              selected.map(({ include, number, answer_note, ...q }) => ({
+              selected.map(({ include, number, answer_note, answer_source, ...q }) => ({
                 ...q,
                 options: q.options.length >= 2 ? q.options : ['', ''],
               }))

@@ -8,6 +8,14 @@ const getBaseUrl = () => {
 
 const BASE_URL = getBaseUrl();
 
+/**
+ * Exported so components building their own fetch calls (image uploads, which
+ * need multipart bodies) resolve the API the same way fetchAPI does.
+ * Reading import.meta.env.VITE_API_URL directly is a trap: it is undefined in
+ * local dev, producing a request to the literal URL "undefined/content/...".
+ */
+export { BASE_URL };
+
 // Appends moduleId directly to FormData body instead of URL Query Params
 export const uploadVideoWithProgress = (moduleId, file, title, description, onProgress) => {
   return new Promise((resolve, reject) => {

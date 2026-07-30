@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3 } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
 
@@ -75,9 +75,19 @@ export default function MainLayout() {
 
         {/* User Info */}
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex px-4 py-1.5 rounded-[30px] border-2 border-black bg-white font-bold text-xs items-center gap-2 cursor-default">
+          <button
+            type="button"
+            onClick={() => navigate('/profile')}
+            title="Edit your profile"
+            aria-current={location.pathname === '/profile' ? 'page' : undefined}
+            className={`hidden sm:flex px-4 py-1.5 rounded-[30px] border-2 border-black font-bold text-xs items-center gap-2 cursor-pointer transition-colors ${
+              location.pathname === '/profile'
+                ? 'bg-[#F9E076]'
+                : 'bg-white hover:bg-[#F9E076]'
+            }`}
+          >
             {user?.name || 'student'}
-          </div>
+          </button>
           <button onClick={logout} className="px-4 py-1.5 rounded-[30px] border-2 border-black bg-white font-bold text-xs hover:bg-[#F26B4D] hover:text-white transition-colors">
             Exit
           </button>
@@ -116,6 +126,20 @@ export default function MainLayout() {
             </button>
           );
         })}
+
+        {/* The name pill in the header is `hidden sm:flex`, so without this
+            there is no route to /profile at all on a phone. */}
+        <button
+          onClick={() => navigate('/profile')}
+          className={`flex flex-col items-center justify-center gap-0.5 px-4 py-1.5 rounded-2xl font-bold text-[11px] transition-colors ${
+            location.pathname === '/profile'
+              ? 'bg-[#A7E2D1] border-2 border-black'
+              : 'text-black/60'
+          }`}
+        >
+          <UserIcon size={20} strokeWidth={2.5} />
+          Profile
+        </button>
       </div>
     </div>
   );

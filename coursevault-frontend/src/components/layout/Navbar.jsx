@@ -41,10 +41,17 @@ export default function Navbar() {
         </div>
 
         <div className="flex items-center gap-4">
+          {/* NOTE: this component is not imported anywhere — MainLayout renders
+              its own <nav>. Left as-is; edit MainLayout.jsx for header changes. */}
           {user && (
-            <div className="hidden lg:flex items-center gap-2 font-bold bg-white brutal-border rounded-full px-4 py-2 shadow-[2px_2px_0px_0px_#111]">
+            <button
+              type="button"
+              onClick={() => navigate('/profile')}
+              title="Edit your profile"
+              className="hidden lg:flex items-center gap-2 font-bold bg-white brutal-border rounded-full px-4 py-2 shadow-[2px_2px_0px_0px_#111] hover:bg-[#F9E076] transition-colors"
+            >
               <User size={18} /> {user.name}
-            </div>
+            </button>
           )}
           <NavButton primary onClick={logout}>
             <LogOut size={18} strokeWidth={2.5} /> <span className="hidden sm:inline">Exit</span>

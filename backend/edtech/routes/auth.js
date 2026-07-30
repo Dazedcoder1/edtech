@@ -110,7 +110,7 @@ router.post("/login", async (req, res) => {
 router.get("/me", authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, name, email, role, created_at FROM users WHERE id = $1`,
+            `SELECT id, name, email, phone, role, created_at FROM users WHERE id = $1`,
             [req.user.id]
         );
         if (result.rows.length === 0) {
@@ -119,6 +119,167 @@ router.get("/me", authMiddleware, async (req, res) => {
         res.json({ success: true, user: result.rows[0] });
     } catch (err) {
         console.error("Me error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// PROFILE
+// ============================================================
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Deliberately permissive: digits, spaces, +, -, (), dots. Phone formats vary
+// enough internationally that anything stricter rejects valid numbers.
+const PHONE_RE = /^[+]?[\d\s().-]{6,20}$/;
+
+/**
+ * PUT /api/auth/profile
+ * Body: { name?, phone?, email?, currentPassword? }
+ *
+ * Changing the email requires the current password. Email is the login
+ * identifier, so without that check anyone who found an unattended logged-in
+ * browser could point the account at their own address and take it over.
+ *
+ * A successful email change also reissues the token, because the JWT carries
+ * the email in its payload and would otherwise hold a stale value until it
+ * expired seven days later.
+ */
+router.put("/profile", authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { name, phone, email, currentPassword } = req.body;
+
+        const existing = await pool.query(
+            `SELECT id, name, email, phone, role, password_hash FROM users WHERE id = $1`,
+            [userId]
+        );
+        if (existing.rows.length === 0) {
+            return res.status(404).json({ error: "User not found" });
+        }
+        const user = existing.rows[0];
+
+        // --- validate ------------------------------------------------------
+        const nextName = name === undefined ? user.name : String(name).trim();
+        if (!nextName) {
+            return res.status(400).json({ error: "Name cannot be empty." });
+        }
+
+        let nextPhone = user.phone;
+        if (phone !== undefined) {
+            const trimmed = String(phone).trim();
+            if (trimmed && !PHONE_RE.test(trimmed)) {
+                return res.status(400).json({ error: "That phone number doesn't look valid." });
+            }
+            nextPhone = trimmed || null; // empty string clears it
+        }
+
+        let nextEmail = user.email;
+        let emailChanged = false;
+
+        if (email !== undefined) {
+            const trimmed = String(email).trim().toLowerCase();
+            if (!EMAIL_RE.test(trimmed)) {
+                return res.status(400).json({ error: "That email address doesn't look valid." });
+            }
+
+            if (trimmed !== user.email.toLowerCase()) {
+                if (!currentPassword) {
+                    return res.status(400).json({
+                        error: "Enter your current password to change your email address.",
+                    });
+                }
+
+                const ok = await bcrypt.compare(String(currentPassword), user.password_hash);
+                if (!ok) {
+                    return res.status(401).json({ error: "That password is incorrect." });
+                }
+
+                const taken = await pool.query(
+                    `SELECT 1 FROM users WHERE LOWER(email) = $1 AND id <> $2`,
+                    [trimmed, userId]
+                );
+                if (taken.rows.length > 0) {
+                    return res.status(409).json({ error: "That email is already in use." });
+                }
+
+                nextEmail = trimmed;
+                emailChanged = true;
+            }
+        }
+
+        // --- persist -------------------------------------------------------
+        const updated = await pool.query(`
+            UPDATE users
+            SET name = $1, phone = $2, email = $3, updated_at = NOW()
+            WHERE id = $4
+            RETURNING id, name, email, phone, role, created_at
+        `, [nextName, nextPhone, nextEmail, userId]);
+
+        const profile = updated.rows[0];
+
+        // The name is in the token payload too, so refresh it whenever either
+        // identity field moved.
+        const nameChanged = nextName !== user.name;
+        const response = { success: true, user: profile };
+
+        if (emailChanged || nameChanged) {
+            response.token = jwt.sign(
+                { id: profile.id, email: profile.email, role: profile.role, name: profile.name },
+                JWT_SECRET,
+                { expiresIn: JWT_EXPIRES_IN }
+            );
+        }
+
+        res.json(response);
+
+    } catch (err) {
+        // Race against the uniqueness check above.
+        if (err.code === '23505') {
+            return res.status(409).json({ error: "That email is already in use." });
+        }
+        console.error("Profile update error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * PUT /api/auth/password
+ * Body: { currentPassword, newPassword }
+ */
+router.put("/password", authMiddleware, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: "Both your current and new password are required." });
+        }
+        if (String(newPassword).length < 8) {
+            return res.status(400).json({ error: "New password must be at least 8 characters." });
+        }
+
+        const result = await pool.query(
+            `SELECT password_hash FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        const ok = await bcrypt.compare(String(currentPassword), result.rows[0].password_hash);
+        if (!ok) {
+            return res.status(401).json({ error: "Your current password is incorrect." });
+        }
+
+        const hash = await bcrypt.hash(String(newPassword), 10);
+        await pool.query(
+            `UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`,
+            [hash, req.user.id]
+        );
+
+        res.json({ success: true, message: "Password updated." });
+
+    } catch (err) {
+        console.error("Password change error:", err);
         res.status(500).json({ error: err.message });
     }
 });
