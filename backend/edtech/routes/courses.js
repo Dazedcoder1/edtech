@@ -2,9 +2,9 @@
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 import jwt from "jsonwebtoken";
+import { JWT_SECRET } from "../config/jwt.js";
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key";
 
 // GET /api/courses
 
@@ -207,7 +207,15 @@ router.get("/:id", async (req, res) => {
                 );
                 isEnrolled = enrollmentCheck.rows.length > 0;
                 isCreator = course.educator_id === decoded.id;
-            } catch (err) {}
+            } catch (err) {
+                // Never swallow this. A verify failure here silently strips
+                // isCreator/isEnrolled, so the UI hides every educator control
+                // and looks like a permissions bug with nothing in the logs.
+                console.warn(
+                    `[courses] token verification failed on GET /courses/${id}: ${err.message}. ` +
+                    `isCreator/isEnrolled will be false.`
+                );
+            }
         }
 
         res.json({

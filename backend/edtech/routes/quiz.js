@@ -4,6 +4,80 @@ import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
 
+/**
+ * Single source of truth for "may this user use this quiz?".
+ *
+ * This existed in three copies with three different rules, which is why an
+ * educator could open a quiz but not submit it:
+ *
+ *   GET  /:quizId        if (!isOwner && req.user.role === 'student')  <- exempted educators
+ *   POST /:quizId/answer if (!isOwner)                                 <- did not
+ *   POST /:quizId/submit if (!isOwner)                                 <- did not
+ *
+ * The rule: owners and admins always pass, other educators may take a quiz to
+ * preview it, students must hold an active enrolment.
+ *
+ * @returns {{ok: true, courseId: string, isOwner: boolean}
+ *          | {ok: false, status: number, error: string}}
+ */
+async function checkQuizAccess(db, quizId, user) {
+    const meta = await db.query(`
+        SELECT m.course_id, c.educator_id, c.title, c.parent_course_id
+        FROM quizzes q
+        JOIN modules m ON q.module_id = m.id
+        JOIN courses c ON m.course_id = c.id
+        WHERE q.id = $1
+    `, [quizId]);
+
+    if (meta.rows.length === 0) {
+        return { ok: false, status: 404, error: "Quiz not found" };
+    }
+
+    const {
+        course_id: courseId,
+        educator_id: educatorId,
+        title: courseTitle,
+        parent_course_id: parentCourseId,
+    } = meta.rows[0];
+
+    const isOwner = educatorId === user.id;
+
+    if (isOwner || user.role === 'admin' || user.role === 'educator') {
+        return { ok: true, courseId, isOwner };
+    }
+
+    // Courses nest: a quiz can live in a sub-course while the student enrolled
+    // in the parent. Accept either, or access breaks for every sub-course quiz.
+    const courseIds = parentCourseId ? [courseId, parentCourseId] : [courseId];
+
+    const rows = await db.query(
+        `SELECT course_id, status, payment_status FROM enrollments
+         WHERE user_id = $1 AND course_id = ANY($2::uuid[])`,
+        [user.id, courseIds]
+    );
+
+    if (rows.rows.some((r) => r.status === 'active')) {
+        return { ok: true, courseId, isOwner };
+    }
+
+    // Say what is actually wrong. "You must be enrolled" is unhelpful — and
+    // wrong — when the row exists but is sitting at 'pending' because a
+    // payment never completed.
+    const found = rows.rows[0];
+    const error = found
+        ? `Your enrolment in "${courseTitle}" is "${found.status}"` +
+          (found.payment_status ? ` (payment: ${found.payment_status})` : '') +
+          `. It must be active to take this quiz.`
+        : `You are not enrolled in "${courseTitle}".`;
+
+    return {
+        ok: false,
+        status: 403,
+        error,
+        debug: { courseId, parentCourseId, userId: user.id, enrollments: rows.rows },
+    };
+}
+
 // ============================================================
 // CREATE QUIZ
 // ============================================================
@@ -125,16 +199,11 @@ router.post("/:quizId/answer", authMiddleware, async (req, res) => {
             return res.status(404).json({ error: "Quiz not found" });
         }
 
-        const isOwner = quizCheck.rows[0].educator_id === userId;
-        if (!isOwner) {
-            const enrollCheck = await client.query(
-                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
-                [userId, quizCheck.rows[0].course_id]
-            );
-            if (enrollCheck.rows.length === 0) {
-                client.release();
-                return res.status(403).json({ error: "Access denied. You must be enrolled." });
-            }
+        const access = await checkQuizAccess(client, quizId, req.user);
+        if (!access.ok) {
+            if (access.debug) console.warn("[quiz] access denied:", access.error, access.debug);
+            client.release();
+            return res.status(access.status).json({ error: access.error });
         }
 
         const questionResult = await client.query(`
@@ -235,19 +304,13 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
             return res.status(404).json({ error: "Quiz not found" });
         }
 
-        const courseId = quizMeta.rows[0].course_id;
-        const isOwner = quizMeta.rows[0].educator_id === userId;
-
-        if (!isOwner) {
-            const enrollCheck = await client.query(
-                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
-                [userId, courseId]
-            );
-            if (enrollCheck.rows.length === 0) {
-                client.release();
-                return res.status(403).json({ error: "Access denied. You must be enrolled." });
-            }
+        const access = await checkQuizAccess(client, quizId, req.user);
+        if (!access.ok) {
+            if (access.debug) console.warn("[quiz] access denied:", access.error, access.debug);
+            client.release();
+            return res.status(access.status).json({ error: access.error });
         }
+        const courseId = access.courseId;
 
         await client.query("BEGIN");
 
@@ -301,6 +364,44 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
         `, [correctAnswers, totalQuestions, score, attemptId]);
 
         await client.query("COMMIT");
+
+        // ================================================================
+        // PER-QUESTION REVIEW
+        // ================================================================
+        // Only assembled after the attempt is committed. correct_option_index
+        // is deliberately withheld from students by GET /:quizId — sending it
+        // with the questions would hand them the answer key before they
+        // answer. Once the attempt is finalised there is nothing left to leak.
+        //
+        // LEFT JOIN so unanswered questions still appear, with a null
+        // selected_option rather than being silently dropped from the review.
+        const reviewResult = await client.query(`
+            SELECT
+                q.id            AS question_id,
+                q.question_text,
+                q.options,
+                q.correct_option_index,
+                q.image_url,
+                a.selected_option,
+                COALESCE(a.is_correct, false) AS is_correct
+            FROM quiz_questions q
+            LEFT JOIN quiz_answers a
+                   ON a.question_id = q.id AND a.attempt_id = $1
+            WHERE q.quiz_id = $2
+            ORDER BY q.created_at ASC
+        `, [attemptId, quizId]);
+
+        const results = reviewResult.rows.map((r) => ({
+            questionId: r.question_id,
+            questionText: r.question_text,
+            options: r.options,
+            imageUrl: r.image_url,
+            selectedOption: r.selected_option,
+            correctOption: r.correct_option_index,
+            isCorrect: r.is_correct,
+        }));
+
+        const unanswered = results.filter((r) => r.selectedOption === null).length;
 
         // ================================================================
         // STATS (computed after commit, so this attempt is included below)
@@ -365,7 +466,10 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
             attemptId,
             total: totalQuestions,
             correct: correctAnswers,
+            incorrect: totalQuestions - correctAnswers - unanswered,
+            unanswered,
             score,
+            results,
             stats: {
                 rank,
                 totalAttempts,
@@ -518,17 +622,13 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
         }
 
         const quiz = quizResult.rows[0];
-        const isOwner = quiz.educator_id === req.user.id;
 
-        if (!isOwner && req.user.role === 'student') {
-            const enrollCheck = await pool.query(
-                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
-                [req.user.id, quiz.course_id]
-            );
-            if (enrollCheck.rows.length === 0) {
-                return res.status(403).json({ error: "Access denied. You must be enrolled to take this quiz." });
-            }
+        const access = await checkQuizAccess(pool, quizId, req.user);
+        if (!access.ok) {
+            if (access.debug) console.warn("[quiz] access denied:", access.error, access.debug);
+            return res.status(access.status).json({ error: access.error });
         }
+        const isOwner = access.isOwner;
 
         const questionsResult = await pool.query(`
             SELECT id, question_text, options, correct_option_index, image_url
@@ -589,6 +689,7 @@ router.get("/module/:moduleId", authMiddleware, async (req, res) => {
         // attempt so the frontend can show a "Completed" badge + score.
         const result = await pool.query(`
             SELECT q.id, q.title, q.description, q.created_at, q.folder_id,
+                   COALESCE(q.priority, 0) AS priority,
                    COUNT(DISTINCT qq.id)::int AS question_count,
                    qa.score AS user_score,
                    (qa.status = 'completed') AS is_completed
@@ -597,7 +698,7 @@ router.get("/module/:moduleId", authMiddleware, async (req, res) => {
             LEFT JOIN quiz_attempts qa ON qa.quiz_id = q.id AND qa.user_id = $2 AND qa.status = 'completed'
             WHERE q.module_id = $1
             GROUP BY q.id, qa.score, qa.status
-            ORDER BY q.created_at DESC
+            ORDER BY COALESCE(q.priority, 0) ASC, q.created_at ASC
         `, [moduleId, userId]);
 
         res.json({ success: true, quizzes: result.rows });

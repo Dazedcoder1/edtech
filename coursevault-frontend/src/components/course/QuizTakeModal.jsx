@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Trophy, Target, ArrowRight, RotateCcw, Award, TrendingUp, ListChecks, Clock } from 'lucide-react';
 import Button from '../ui/Button.jsx';
-import { fetchAPI } from '../../services/api.js';
+import { fetchAPI, resolveMediaUrl } from '../../services/api.js';
 import MathDisplay from '../ui/MathDisplay.jsx';
 
 // Formats seconds into "Xh Ym Zs" / "Ym Zs" / "Zs" -- drops leading
@@ -39,6 +39,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scorecard, setScorecard] = useState(null);
+  const [showReview, setShowReview] = useState(false);
 
   // 🌟 Real open -> submit timer. Set the instant the quiz's questions
   // are actually on screen (not when the request merely fires), so the
@@ -135,7 +136,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
         )}
 
         {!isLoading && !scorecard && (
-          <form onSubmit={handleSubmit} className="overflow-y-auto p-3 md:p-8 flex flex-col gap-4 md:gap-8 bg-[#F4F4F4]">
+          <form onSubmit={handleSubmit} className="flex-1 min-h-0 overflow-y-auto p-3 md:p-8 flex flex-col gap-4 md:gap-8 bg-[#F4F4F4]">
             {questions.map((q, index) => (
               <div key={q.id} className="bg-white border-2 border-black rounded-xl md:rounded-2xl p-3 md:p-6 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111]">
                 <h4 className="font-black text-sm md:text-xl mb-2.5 md:mb-4">
@@ -146,7 +147,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
                 {q.image_url && (
                   <div className="my-3 md:my-5 border-2 border-black rounded-xl overflow-hidden bg-white max-h-64 flex items-center justify-center p-2 shadow-[2px_2px_0px_0px_#000]">
                     <img 
-                      src={q.image_url} 
+                      src={resolveMediaUrl(q.image_url)} 
                       alt={`Diagram for Question ${index + 1}`} 
                       className="max-h-60 w-auto object-contain" 
                     />
@@ -193,7 +194,11 @@ export default function QuizTakeModal({ quizId, onClose }) {
         )}
 
         {scorecard && (
-          <div className="flex flex-col p-4 md:p-8 bg-[#F4F4F4] text-center overflow-y-auto gap-5 md:gap-6">
+          /* flex-1 min-h-0 is required: a flex child defaults to
+             min-height:auto and will not shrink below its content, so
+             overflow-y-auto never engages and the modal's overflow-hidden
+             simply clips the review list. */
+          <div className="flex-1 min-h-0 flex flex-col p-4 md:p-8 bg-[#F4F4F4] text-center overflow-y-auto gap-5 md:gap-6">
 
             <div className="bg-white border-2 md:border-[3px] border-black rounded-xl md:rounded-2xl p-5 md:p-10 flex flex-col items-center shadow-[4px_4px_0px_0px_#111] md:shadow-[8px_8px_0px_0px_#111]">
               <div className={`w-16 h-16 md:w-28 md:h-28 rounded-full border-[3px] md:border-[4px] border-black flex items-center justify-center mb-3 md:mb-5 shadow-[4px_4px_0px_0px_#111] md:shadow-[6px_6px_0px_0px_#111] ${
@@ -210,7 +215,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
 
               <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
                 <button 
-                  onClick={() => setScorecard(null)} 
+                  onClick={() => { setScorecard(null); setShowReview(false); }}
                   className="flex items-center justify-center gap-2 px-5 md:px-6 py-2.5 md:py-3 bg-white border-2 md:border-[3px] border-black rounded-xl font-bold text-sm md:text-lg hover:bg-gray-100 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_#111] transition-all"
                 >
                   <RotateCcw size={16} strokeWidth={3} className="md:w-5 md:h-5" /> Retake Quiz
@@ -257,6 +262,102 @@ export default function QuizTakeModal({ quizId, onClose }) {
                     className="col-span-2"
                   />
                 </div>
+              </div>
+            )}
+
+            {/* ------------------------------------------------- review ---- */}
+            {Array.isArray(scorecard.results) && scorecard.results.length > 0 && (
+              <div className="text-left">
+                <button
+                  type="button"
+                  onClick={() => setShowReview((s) => !s)}
+                  className="flex items-center gap-2 font-black text-base md:text-xl uppercase mb-2.5 md:mb-4 hover:underline"
+                >
+                  <ListChecks size={18} strokeWidth={2.5} />
+                  {showReview ? 'Hide' : 'Review'} Answers
+                  <span className="text-xs font-bold normal-case text-gray-500">
+                    ({scorecard.correct} correct
+                    {scorecard.incorrect > 0 && `, ${scorecard.incorrect} wrong`}
+                    {scorecard.unanswered > 0 && `, ${scorecard.unanswered} skipped`})
+                  </span>
+                </button>
+
+                {showReview && (
+                  <div className="flex flex-col gap-3">
+                    {scorecard.results.map((r, i) => {
+                      const skipped = r.selectedOption === null || r.selectedOption === undefined;
+                      return (
+                        <div
+                          key={r.questionId}
+                          className={`border-2 border-black rounded-xl p-3 md:p-4 shadow-[3px_3px_0px_0px_#111] ${
+                            r.isCorrect ? 'bg-[#EAF7F2]' : skipped ? 'bg-white' : 'bg-red-50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2 font-bold text-sm md:text-base mb-2">
+                            <span
+                              className={`shrink-0 w-5 h-5 rounded-full border-2 border-black flex items-center justify-center text-[11px] ${
+                                r.isCorrect ? 'bg-[#A7E2D1]' : skipped ? 'bg-gray-200' : 'bg-red-400'
+                              }`}
+                            >
+                              {r.isCorrect ? '✓' : skipped ? '–' : '✕'}
+                            </span>
+                            <span className="text-gray-400">{i + 1}.</span>
+                            <MathDisplay text={r.questionText} />
+                          </div>
+
+                          {r.imageUrl && (
+                            <img
+                              src={resolveMediaUrl(r.imageUrl)}
+                              alt=""
+                              className="max-h-40 w-auto object-contain border-2 border-black rounded-lg my-2"
+                            />
+                          )}
+
+                          <div className="flex flex-col gap-1 ml-7 text-xs md:text-sm">
+                            {(r.options || []).map((opt, oi) => {
+                              const isAnswer = oi === r.correctOption;
+                              const isPicked = oi === r.selectedOption;
+                              return (
+                                <div
+                                  key={oi}
+                                  className={`flex items-start gap-2 px-2 py-1 rounded border ${
+                                    isAnswer
+                                      ? 'bg-green-200 border-green-700 font-bold'
+                                      : isPicked
+                                      ? 'bg-red-200 border-red-600'
+                                      : 'border-transparent'
+                                  }`}
+                                >
+                                  <span className="text-gray-500 font-bold shrink-0">
+                                    {'ABCDEFGH'[oi] || oi + 1}
+                                  </span>
+                                  <span className="min-w-0">
+                                    <MathDisplay text={opt} />
+                                  </span>
+                                  {isAnswer && (
+                                    <span className="ml-auto shrink-0 text-[10px] uppercase font-black text-green-800">
+                                      correct
+                                    </span>
+                                  )}
+                                  {isPicked && !isAnswer && (
+                                    <span className="ml-auto shrink-0 text-[10px] uppercase font-black text-red-700">
+                                      you chose
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            {skipped && (
+                              <span className="text-gray-500 italic mt-0.5">
+                                You didn't answer this one.
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>

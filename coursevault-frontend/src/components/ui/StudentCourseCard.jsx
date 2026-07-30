@@ -1,5 +1,6 @@
 import React from 'react';
 import CircularProgress from '../ui/CircularProgress.jsx';
+import { resolveMediaUrl } from '../../services/api.js';
 
 export default function StudentCourseCard({ course, index, onClick }) {
     const { id, title, description, educator_name, progress, thumbnail_url } = course;
@@ -12,7 +13,7 @@ export default function StudentCourseCard({ course, index, onClick }) {
             {/* Thumbnail Area with Progress Ring */}
             <div className="w-full h-40 bg-[#e9ecef] border-2 border-black rounded-xl mb-4 overflow-hidden flex items-center justify-center relative">
                 {thumbnail_url ? (
-                    <img src={thumbnail_url} alt={title} className="object-cover w-full h-full" />
+                    <img src={resolveMediaUrl(thumbnail_url)} alt={title} className="object-cover w-full h-full" />
                 ) : (
                     <span className="text-5xl">📚</span>
                 )}

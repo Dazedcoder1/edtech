@@ -241,6 +241,11 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32)`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
 
+        // Quizzes need a sort key so they can be interleaved with PDFs and
+        // videos in one ordered list. content_items already has `priority`;
+        // this gives quizzes the same field so both sort together.
+        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0`);
+
         console.log("✅ Database schema ready");
     } catch (err) {
         console.error("❌ Database setup error:", err);

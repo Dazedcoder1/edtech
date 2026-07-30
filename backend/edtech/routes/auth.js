@@ -4,9 +4,9 @@ import jwt from "jsonwebtoken";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 
+import { JWT_SECRET, JWT_EXPIRES_IN } from "../config/jwt.js";
+
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
-const JWT_EXPIRES_IN = "7d";
 
 // ROUTE 1: REGISTER
 // POST /api/auth/register
