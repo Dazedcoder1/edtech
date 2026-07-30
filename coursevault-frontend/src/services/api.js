@@ -39,7 +39,14 @@ export const resolveMediaUrl = (url) => {
 };
 
 // Appends moduleId directly to FormData body instead of URL Query Params
-export const uploadVideoWithProgress = (moduleId, file, title, description, onProgress) => {
+export const uploadVideoWithProgress = (
+  moduleId,
+  file,
+  title,
+  description,
+  onProgress,
+  options = {}
+) => {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const token = localStorage.getItem('token');
@@ -51,6 +58,11 @@ export const uploadVideoWithProgress = (moduleId, file, title, description, onPr
     formData.append('moduleId', moduleId);
     formData.append('title', title || '');
     formData.append('description', description || '');
+
+    // Without these, the "free preview" checkbox and the tab a video was added
+    // from were silently dropped for videos but honoured for PDFs.
+    formData.append('preview', options.preview ? 'true' : 'false');
+    if (options.folderId) formData.append('folder_id', options.folderId);
 
     // Track real-time uploading logs
     xhr.upload.addEventListener('progress', (event) => {

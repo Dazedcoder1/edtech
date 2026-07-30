@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, UploadCloud, Image as ImageIcon, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
-import { fetchAPI, BASE_URL } from '../../services/api';
+import { fetchAPI, BASE_URL, resolveMediaUrl } from '../../services/api';
 
 export default function CourseModal({ isOpen, onClose, course = null, onSave, parentCourseId = null }) {
   const [title, setTitle] = useState('');
@@ -137,7 +137,22 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
             <label className="font-bold text-sm ml-1 mb-1 block">Course Thumbnail</label>
             {thumbnailUrl ? (
               <div className="relative border-2 border-black rounded-xl overflow-hidden group bg-gray-100 h-40 flex items-center justify-center shadow-[4px_4px_0px_0px_#111]">
-                <img src={thumbnailUrl} alt="Thumbnail preview" className="w-full h-full object-cover" />
+                {/* resolveMediaUrl is required here too: upload-image returns a
+                    relative /api/content/stream-image URL, which in dev resolves
+                    against Vite on :5173 instead of the API on :3000 — so the
+                    preview showed a broken-image icon. */}
+                <img
+                  src={resolveMediaUrl(thumbnailUrl)}
+                  alt="Thumbnail preview"
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    console.warn('[CourseModal] thumbnail preview failed to load', {
+                      stored: thumbnailUrl,
+                      resolved: resolveMediaUrl(thumbnailUrl),
+                    });
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
                 <button
                   type="button"
                   onClick={() => setThumbnailUrl('')}

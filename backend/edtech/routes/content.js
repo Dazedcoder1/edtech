@@ -15,6 +15,36 @@ const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_VIDEO_DIR = path.join(__dirname, "../temp_videos");
 
+/**
+ * Resolve the ffmpeg / ffprobe binaries.
+ *
+ * They were spawned by bare name, which requires a system-wide FFmpeg on PATH.
+ * package.json already depends on @ffmpeg-installer/ffmpeg and
+ * @ffprobe-installer/ffprobe, which ship the binary and expose its path — so
+ * on a machine without FFmpeg installed, every transcode died with ENOENT and
+ * the video was marked 'failed', with the fix sitting unused in node_modules.
+ *
+ * Falls back to the bare name so a system install still wins if those packages
+ * are ever removed.
+ */
+async function resolveBinary(installerPackage, fallbackName) {
+    try {
+        const mod = await import(installerPackage);
+        const resolved = mod.default?.path || mod.path;
+        if (resolved && fs.existsSync(resolved)) {
+            console.log(`ffmpeg-tools: using bundled ${fallbackName} at ${resolved}`);
+            return resolved;
+        }
+    } catch (err) {
+        console.warn(`ffmpeg-tools: could not load ${installerPackage} (${err.message}); falling back to PATH.`);
+    }
+    console.log(`ffmpeg-tools: ${fallbackName} falling back to PATH`);
+    return fallbackName;
+}
+
+const FFMPEG_PATH = await resolveBinary("@ffmpeg-installer/ffmpeg", "ffmpeg");
+const FFPROBE_PATH = await resolveBinary("@ffprobe-installer/ffprobe", "ffprobe");
+
 if (!fs.existsSync(TEMP_VIDEO_DIR)) fs.mkdirSync(TEMP_VIDEO_DIR, { recursive: true });
 
 // Small assets (PDFs/images) stay in memory — fine at these sizes.
@@ -31,6 +61,44 @@ const videoUpload = multer({
     }),
     limits: { fileSize: 3 * 1024 * 1024 * 1024 } // 3GB Limit for videos
 });
+
+
+/**
+ * Decide what to do about an existing row with the same file_hash.
+ *
+ * content_items.file_hash is UNIQUE and deletes are soft (is_active = false),
+ * which leaves three cases:
+ *
+ *   no row        -> caller inserts as normal
+ *   active row    -> real duplicate; reuse it, upload nothing
+ *   INACTIVE row  -> deleted, but the hash is still taken. Filtering it out
+ *                    with "AND is_active = true" means the INSERT then fails
+ *                    with 'duplicate key value ... content_items_file_hash_key'
+ *                    — so revive the row instead. The bytes are already in R2
+ *                    under the same hash-addressed key.
+ *
+ * @returns {Promise<{row: object, revived: boolean} | null>}
+ */
+async function resolveExistingByHash(db, fileHash, fields = {}) {
+    const found = await db.query(`SELECT * FROM content_items WHERE file_hash = $1`, [fileHash]);
+    if (found.rows.length === 0) return null;
+
+    const row = found.rows[0];
+    if (row.is_active) return { row, revived: false };
+
+    const revived = await db.query(`
+        UPDATE content_items
+        SET is_active = true,
+            title = COALESCE($2, title),
+            description = COALESCE($3, description),
+            preview = COALESCE($4, preview),
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+    `, [row.id, fields.title ?? null, fields.description ?? null, fields.preview ?? null]);
+
+    return { row: revived.rows[0], revived: true };
+}
 
 const activeJobs = new Map();
 
@@ -85,10 +153,8 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
         // 🚀 RESTORED: Only ACTIVE rows count as a real duplicate. A soft-deleted
         // row (is_active = false) with a matching hash must not short-circuit
         // the upload — that returns a dead, unopenable "duplicate" forever.
-        const existing = await pool.query(
-            `SELECT * FROM content_items WHERE file_hash = $1 AND is_active = true`,
-            [fileHash]
-        );
+        const existingResolved = await resolveExistingByHash(pool, fileHash, { title, description });
+        const existing = { rows: existingResolved ? [existingResolved.row] : [] };
         if (existing.rows.length > 0) {
             const contentId = existing.rows[0].id;
             if (moduleId) {
@@ -158,10 +224,8 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
         const extension = getFileExtension(file.originalname);
 
         // 🚀 RESTORED: Only ACTIVE rows count as a real duplicate.
-        const existing = await pool.query(
-            `SELECT * FROM content_items WHERE file_hash = $1 AND is_active = true`,
-            [fileHash]
-        );
+        const existingResolved = await resolveExistingByHash(pool, fileHash, { title, description });
+        const existing = { rows: existingResolved ? [existingResolved.row] : [] };
         if (existing.rows.length > 0) {
             fs.unlinkSync(rawDiskPath);
             const contentId = existing.rows[0].id;
@@ -611,7 +675,7 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         await new Promise((resolve) => {
             let ffprobe;
             try {
-                ffprobe = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath]);
+                ffprobe = spawn(FFPROBE_PATH, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath]);
             } catch (spawnErr) {
                 console.error("❌ ffprobe failed to start:", spawnErr.message);
                 ffprobeOk = false;
@@ -644,10 +708,10 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
             await new Promise((resolve, reject) => {
                 let ffmpeg;
                 try {
-                    ffmpeg = spawn("ffmpeg", [
+                    ffmpeg = spawn(FFMPEG_PATH, [
                         "-i", inputPath,
                         "-vf", `scale=${scale}`,
-                        "-c:v", "libx264", "-preset", "medium",
+                        "-c:v", "libx264", "-preset", "veryfast",
                         "-b:v", bitrate, "-maxrate", bitrate,
                         "-bufsize", `${parseInt(bitrate) * 2}k`,
                         "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
@@ -673,9 +737,16 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                     }
                 });
 
+                let stderrTail = "";
+                ffmpeg.stderr.on("data", (d) => { stderrTail = (stderrTail + d.toString()).slice(-4000); });
+
                 ffmpeg.on("close", (code) => {
-                    if (code === 0) resolve();
-                    else reject(new Error(`ffmpeg exited ${code} for ${resName}`));
+                    if (code === 0) return resolve();
+                    // Without this the failure read only "ffmpeg exited 1",
+                    // which is why "check the server log" showed nothing useful.
+                    const reason = stderrTail.trim().split("\n").slice(-6).join(" | ");
+                    console.error(`\nffmpeg failed on ${resName} (exit ${code}):\n${stderrTail.trim()}\n`);
+                    reject(new Error(`ffmpeg exited ${code} on ${resName}: ${reason || 'no output captured'}`));
                 });
                 // Without this handler, a missing ffmpeg binary crashes the whole process.
                 ffmpeg.on("error", (err) => {

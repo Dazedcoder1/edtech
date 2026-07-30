@@ -2,7 +2,9 @@ export const formatSize = (bytes) => {
   if (!bytes) return '0 B';
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  // Videos are capped at 3GB, which stopped here reading as "3072.0 MB".
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
 };
 
 const tagColors = ['bg-[#87CEFA]', 'bg-[#A7E2D1]', 'bg-[#F9E076]'];

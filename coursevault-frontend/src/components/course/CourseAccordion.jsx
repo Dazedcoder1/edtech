@@ -233,6 +233,46 @@ export default function CourseAccordion({
     }
   };
 
+  /**
+   * Poll any still-transcoding video until it becomes playable.
+   *
+   * Nothing was watching /content/:id/status, so a video stayed labelled
+   * "Processing" until a full page reload — even after ffmpeg had finished
+   * minutes earlier. That made a completed transcode look like a stuck one.
+   */
+  const processingIds = contents
+    .filter((c) => c.status === 'processing')
+    .map((c) => c.id)
+    .join(',');
+
+  useEffect(() => {
+    if (!isOpen || !processingIds) return;
+
+    let cancelled = false;
+    const ids = processingIds.split(',');
+
+    const check = async () => {
+      const results = await Promise.all(
+        ids.map((id) =>
+          fetchAPI(`/content/${id}/status`)
+            .then((d) => d.status)
+            .catch(() => 'processing')
+        )
+      );
+      // Refresh only once something has actually left 'processing', so a long
+      // transcode does not trigger a refetch every few seconds for nothing.
+      if (!cancelled && results.some((st) => st && st !== 'processing')) {
+        if (onRefreshCurriculum) onRefreshCurriculum({ silent: true });
+      }
+    };
+
+    const timer = setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isOpen, processingIds]);
+
   // A list built for one tab must never render under another.
   useEffect(() => {
     setReorderNotice('');
@@ -561,6 +601,11 @@ export default function CourseAccordion({
                   if (entry.kind === 'quiz') return renderQuizRow(entry.data, index);
                   const content = entry.data;
                   const isVideo = content.content_type === 'video';
+                  // A freshly uploaded video sits at 'processing' until ffmpeg
+                  // finishes. It used to be filtered out of the API response
+                  // entirely, so it simply vanished after upload.
+                  const isProcessing = content.status === 'processing';
+                  const isFailed = content.status === 'failed';
                   const isSelected = selectedContentIds.includes(content.id);
                   const isDone = completedContentIds.has(content.id); // 🌟 PROGRESS TRACKING
 
@@ -591,7 +636,20 @@ export default function CourseAccordion({
                           <div>
                             <h4 className="font-bold text-lg leading-none mb-1">{content.title}</h4>
                             {!isVideo && <p className="text-sm font-medium text-gray-500">PDF • {formatSize(content.file_size_bytes)}</p>}
-                            {isVideo && <p className="text-sm font-medium text-gray-500">Video Lesson</p>}
+                            {isVideo && !isProcessing && !isFailed && (
+                              <p className="text-sm font-medium text-gray-500">Video Lesson</p>
+                            )}
+                            {isProcessing && (
+                              <p className="text-sm font-bold text-amber-700 flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                                Processing — this can take a few minutes
+                              </p>
+                            )}
+                            {isFailed && (
+                              <p className="text-sm font-bold text-red-700">
+                                Processing failed — check the server log, then re-upload
+                              </p>
+                            )}
                           </div>
                         </div>
 
@@ -604,9 +662,15 @@ export default function CourseAccordion({
                           {isVideo ? (
                             <button
                               onClick={() => setExpandedVideoId(prev => prev === content.id ? null : content.id)}
-                              className="bg-white border-2 border-black rounded-lg px-4 py-2 font-bold text-sm hover:bg-[#F9E076] transition-colors"
+                              disabled={isProcessing || isFailed}
+                              title={isProcessing ? 'Still transcoding' : isFailed ? 'Transcoding failed' : undefined}
+                              className={`border-2 border-black rounded-lg px-4 py-2 font-bold text-sm transition-colors ${
+                                isProcessing || isFailed
+                                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                  : 'bg-white hover:bg-[#F9E076]'
+                              }`}
                             >
-                              {expandedVideoId === content.id ? 'Close' : isDone ? 'Rewatch' : 'Watch'}
+                              {isProcessing ? 'Processing' : isFailed ? 'Failed' : expandedVideoId === content.id ? 'Close' : isDone ? 'Rewatch' : 'Watch'}
                             </button>
                           ) : (
                             <button

@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { X, UploadCloud } from 'lucide-react';
 import Button from '../ui/Button';
-import { uploadVideoWithProgress } from '../../../services/api';
+import { uploadVideoWithProgress } from '../../services/api.js';
 
 export default function VideoUploadModal({ isOpen, onClose, moduleId, onUploadSuccess }) {
   const [title, setTitle] = useState('');

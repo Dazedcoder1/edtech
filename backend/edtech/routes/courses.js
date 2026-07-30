@@ -146,6 +146,33 @@ router.get("/:id", async (req, res) => {
 
         const course = courseResult.rows[0];
 
+        let isEnrolled = false;
+        let isCreator = false;
+
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith("Bearer ")) {
+            try {
+                const token = authHeader.split(" ")[1];
+                const decoded = jwt.verify(token, JWT_SECRET);
+
+                const enrollmentCheck = await pool.query(
+                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                    [decoded.id, id]
+                );
+                isEnrolled = enrollmentCheck.rows.length > 0;
+                isCreator = course.educator_id === decoded.id;
+            } catch (err) {
+                // Never swallow this. A verify failure here silently strips
+                // isCreator/isEnrolled, so the UI hides every educator control
+                // and looks like a permissions bug with nothing in the logs.
+                console.warn(
+                    `[courses] token verification failed on GET /courses/${id}: ${err.message}. ` +
+                    `isCreator/isEnrolled will be false.`
+                );
+            }
+        }
+
+
         const modulesResult = await pool.query(`
             SELECT * FROM modules
             WHERE course_id = $1 AND is_active = true
@@ -176,9 +203,9 @@ router.get("/:id", async (req, res) => {
                         folder_id
                     FROM content_items
                     WHERE id = ANY($1::uuid[])
-                    AND status = 'ready'
                     AND is_active = true
-                `, [module.content_ids]);
+                    AND ($2::boolean OR status = 'ready')
+                `, [module.content_ids, isCreator]);
                 
                 // Log the file sizes for debugging
                 contentResult.rows.forEach(c => {
@@ -190,32 +217,6 @@ router.get("/:id", async (req, res) => {
                 contents = contentResult.rows;
             }
             modules.push({ ...module, contents });
-        }
-
-        let isEnrolled = false;
-        let isCreator = false;
-
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith("Bearer ")) {
-            try {
-                const token = authHeader.split(" ")[1];
-                const decoded = jwt.verify(token, JWT_SECRET);
-
-                const enrollmentCheck = await pool.query(
-                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
-                    [decoded.id, id]
-                );
-                isEnrolled = enrollmentCheck.rows.length > 0;
-                isCreator = course.educator_id === decoded.id;
-            } catch (err) {
-                // Never swallow this. A verify failure here silently strips
-                // isCreator/isEnrolled, so the UI hides every educator control
-                // and looks like a permissions bug with nothing in the logs.
-                console.warn(
-                    `[courses] token verification failed on GET /courses/${id}: ${err.message}. ` +
-                    `isCreator/isEnrolled will be false.`
-                );
-            }
         }
 
         res.json({
