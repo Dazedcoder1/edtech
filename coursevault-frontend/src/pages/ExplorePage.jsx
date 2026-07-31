@@ -76,7 +76,7 @@ export default function ExplorePage() {
                  ========================================= */
               <>
                 <h2 className="text-4xl font-bold tracking-tight mb-8">All Classes</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-2 md:gap-y-16 items-start animate-in fade-in zoom-in-95 duration-300">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-3 md:gap-y-16 items-start animate-in fade-in zoom-in-95 duration-300">
                   {topLevelCourses.map((course, index) => (
                     <CourseCard 
                       key={course.id} 
@@ -109,7 +109,7 @@ export default function ExplorePage() {
                 </div>
 
                 {/* The Subjects Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-2 md:gap-y-16 items-start">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-3 md:gap-y-16 items-start">
                   {childCourses.length === 0 ? (
                     <div className="col-span-full bg-white border-2 border-dashed border-black rounded-xl p-12 text-center text-gray-500 font-bold text-lg shadow-[4px_4px_0px_0px_#111]">
                       No subjects published in this class yet.

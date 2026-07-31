@@ -134,15 +134,15 @@ const PHONE_RE = /^[+]?[\d\s().-]{6,20}$/;
 
 /**
  * PUT /api/auth/profile
- * Body: { name?, phone?, email?, currentPassword? }
+ * Body: { name?, phone? }
  *
- * Changing the email requires the current password. Email is the login
- * identifier, so without that check anyone who found an unattended logged-in
- * browser could point the account at their own address and take it over.
+ * Email is read-only after sign-up — it is the login identifier, and letting
+ * it change is an account-takeover path. Sending a different one returns 403;
+ * sending the current one is accepted as a no-op so clients that echo the
+ * whole profile back still work.
  *
- * A successful email change also reissues the token, because the JWT carries
- * the email in its payload and would otherwise hold a stale value until it
- * expired seven days later.
+ * A rename reissues the token, since the JWT carries the name in its payload
+ * and would otherwise hold a stale value until it expired.
  */
 router.put("/profile", authMiddleware, async (req, res) => {
     try {
@@ -173,56 +173,46 @@ router.put("/profile", authMiddleware, async (req, res) => {
             nextPhone = trimmed || null; // empty string clears it
         }
 
-        let nextEmail = user.email;
-        let emailChanged = false;
-
+        /*
+         * Email is immutable after sign-up.
+         *
+         * It is the login identifier, so allowing it to change here is an
+         * account-takeover path: anyone reaching an unattended logged-in
+         * browser could repoint the account at their own address. Requiring
+         * the current password narrowed that, but the product decision is
+         * that it simply cannot change.
+         *
+         * Enforced here rather than only by disabling the input, because the
+         * input is a UI affordance — a client can still PUT any body it likes.
+         * A mismatched email is rejected loudly rather than ignored silently,
+         * so a stale client cannot believe it succeeded.
+         */
         if (email !== undefined) {
             const trimmed = String(email).trim().toLowerCase();
-            if (!EMAIL_RE.test(trimmed)) {
-                return res.status(400).json({ error: "That email address doesn't look valid." });
-            }
-
             if (trimmed !== user.email.toLowerCase()) {
-                if (!currentPassword) {
-                    return res.status(400).json({
-                        error: "Enter your current password to change your email address.",
-                    });
-                }
-
-                const ok = await bcrypt.compare(String(currentPassword), user.password_hash);
-                if (!ok) {
-                    return res.status(401).json({ error: "That password is incorrect." });
-                }
-
-                const taken = await pool.query(
-                    `SELECT 1 FROM users WHERE LOWER(email) = $1 AND id <> $2`,
-                    [trimmed, userId]
-                );
-                if (taken.rows.length > 0) {
-                    return res.status(409).json({ error: "That email is already in use." });
-                }
-
-                nextEmail = trimmed;
-                emailChanged = true;
+                return res.status(403).json({
+                    error: "Your email address cannot be changed. Contact support if you need it updated.",
+                });
             }
         }
 
         // --- persist -------------------------------------------------------
+        // email is deliberately absent from the SET clause.
         const updated = await pool.query(`
             UPDATE users
-            SET name = $1, phone = $2, email = $3, updated_at = NOW()
-            WHERE id = $4
+            SET name = $1, phone = $2, updated_at = NOW()
+            WHERE id = $3
             RETURNING id, name, email, phone, role, created_at
-        `, [nextName, nextPhone, nextEmail, userId]);
+        `, [nextName, nextPhone, userId]);
 
         const profile = updated.rows[0];
 
-        // The name is in the token payload too, so refresh it whenever either
-        // identity field moved.
+        // The name is carried in the token payload, so a rename needs a fresh
+        // one. Email can no longer move, so it can never go stale here.
         const nameChanged = nextName !== user.name;
         const response = { success: true, user: profile };
 
-        if (emailChanged || nameChanged) {
+        if (nameChanged) {
             response.token = jwt.sign(
                 { id: profile.id, email: profile.email, role: profile.role, name: profile.name },
                 JWT_SECRET,

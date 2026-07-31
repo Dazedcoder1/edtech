@@ -246,6 +246,11 @@ async function setupDatabase() {
         // this gives quizzes the same field so both sort together.
         await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0`);
 
+        // Manual course ordering on the educator dashboard. Course creation
+        // now writes MAX + 1 into this, so a missing column would fail every
+        // insert rather than just disabling the reorder arrows.
+        await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS display_order INT DEFAULT 0`);
+
         console.log("✅ Database schema ready");
     } catch (err) {
         console.error("❌ Database setup error:", err);

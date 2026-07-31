@@ -25,37 +25,67 @@ router.get("/", authMiddleware, async (req, res) => {
                 c.price as course_price,
                 c.status as course_status,
                 u.name as educator_name,
+                /*
+                 * Numerator and denominator must describe the same set of
+                 * items: the ones the student can actually see in the course.
+                 *
+                 * The total used SUM(cardinality(m.content_ids)), which counts
+                 * every id ever put in the array — including inactive modules,
+                 * soft-deleted content, and videos still transcoding or failed.
+                 * The curriculum endpoint hides all of those, so the student
+                 * saw (say) 6 items while the denominator was 9 and the bar
+                 * could never reach 100%.
+                 *
+                 * The completed counts are constrained to the same visible set,
+                 * otherwise finishing an item that was later deleted would push
+                 * the percentage above 100.
+                 */
                 (
-                    -- Completed PDFs/videos
+                    -- Completed videos/PDFs, restricted to still-visible items
                     (
                         SELECT COUNT(DISTINCT vp.content_id)
                         FROM video_progress vp
-                        WHERE vp.course_id = c.id AND vp.user_id = e.user_id AND vp.is_completed = true
+                        JOIN content_items ci ON ci.id = vp.content_id
+                        JOIN modules m ON ci.id = ANY(m.content_ids)
+                        WHERE vp.user_id = e.user_id
+                          AND vp.is_completed = true
+                          AND m.course_id = c.id
+                          AND m.is_active = true
+                          AND ci.is_active = true
+                          AND ci.status = 'ready'
                     )
                     +
-                    -- Completed quizzes (🌟 FIX: these were never counted before)
+                    -- Completed quizzes
                     (
                         SELECT COUNT(DISTINCT qa.quiz_id)
                         FROM quiz_attempts qa
                         JOIN quizzes q ON q.id = qa.quiz_id
                         JOIN modules m ON m.id = q.module_id
-                        WHERE m.course_id = c.id AND qa.user_id = e.user_id AND qa.status = 'completed'
+                        WHERE m.course_id = c.id
+                          AND m.is_active = true
+                          AND qa.user_id = e.user_id
+                          AND qa.status = 'completed'
                     )
                 ) as completed_items,
                 (
-                    -- Total PDFs/videos
+                    -- Total videos/PDFs the student can actually open
                     (
-                        SELECT COALESCE(SUM(cardinality(m.content_ids)), 0)
-                        FROM modules m
+                        SELECT COUNT(DISTINCT ci.id)
+                        FROM content_items ci
+                        JOIN modules m ON ci.id = ANY(m.content_ids)
                         WHERE m.course_id = c.id
+                          AND m.is_active = true
+                          AND ci.is_active = true
+                          AND ci.status = 'ready'
                     )
                     +
-                    -- Total quizzes (🌟 FIX: these were never counted before)
+                    -- Total quizzes
                     (
                         SELECT COUNT(*)
                         FROM quizzes q
                         JOIN modules m ON m.id = q.module_id
                         WHERE m.course_id = c.id
+                          AND m.is_active = true
                     )
                 ) as total_items
             FROM enrollments e

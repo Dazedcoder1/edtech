@@ -45,7 +45,7 @@ export default function EnrollmentsModal({ isOpen, onClose, courseId, courseTitl
           </button>
         </div>
         
-        <div className="p-6 overflow-y-auto bg-[#F4DFD8] rounded-b-xl flex-1">
+        <div className="flex-1 min-h-0 p-4 md:p-6 overflow-y-auto bg-[#F4DFD8] rounded-b-xl">
           <div className="mb-6">
              <h4 className="font-bold text-lg mb-1">{courseTitle}</h4>
              <p className="text-gray-600 font-bold">{students.length} Total Student(s)</p>

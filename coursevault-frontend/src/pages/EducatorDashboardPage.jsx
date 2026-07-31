@@ -227,11 +227,14 @@ export default function EducatorDashboardPage() {
             return (
               <div key={course.id} className="w-full">
                 {/* Row: arrange arrows + name + Edit + Add Course + View + Delete */}
+                {/* Stacks on mobile: the action group is ~300px wide, so on a
+                    phone `justify-between` gave it everything and squeezed the
+                    title to zero width, hiding it behind the buttons. */}
                 <div
-                  className={`flex items-center justify-between bg-white border-[3px] border-black rounded-2xl px-6 py-4 shadow-[6px_6px_0px_0px_#111] transition-all
+                  className={`flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-white border-[3px] border-black rounded-2xl px-4 py-3 md:px-6 md:py-4 shadow-[4px_4px_0px_0px_#111] md:shadow-[6px_6px_0px_0px_#111] transition-all
                     ${isSelected ? 'ring-2 ring-[#F26B4D]' : ''}`}
                 >
-                  <div className="flex items-center gap-4 min-w-0">
+                  <div className="flex items-center gap-3 md:gap-4 min-w-0">
                     {/* Arrange (priority) controls */}
                     <div className="flex flex-col gap-1 shrink-0">
                       <button
@@ -252,20 +255,25 @@ export default function EducatorDashboardPage() {
                       </button>
                     </div>
 
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="font-black text-lg truncate">{course.title}</span>
-                      <span className="text-[10px] font-bold uppercase tracking-wider bg-black text-white px-2 py-1 rounded-full shrink-0">
-                        {course.status || 'draft'}
-                      </span>
-                      {childCount > 0 && (
-                        <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-[#A7E2D1] border border-black px-2 py-1 rounded-full shrink-0">
-                          <Layers size={10} /> {childCount} added
+                    {/* Title on its own line with the badges wrapping under it,
+                        so a long course name truncates instead of pushing the
+                        status pills off the card. */}
+                    <div className="min-w-0 flex-1">
+                      <div className="font-black text-base md:text-lg truncate">{course.title}</div>
+                      <div className="flex flex-wrap items-center gap-2 mt-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider bg-black text-white px-2 py-0.5 rounded-full">
+                          {course.status || 'draft'}
                         </span>
-                      )}
+                        {childCount > 0 && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-[#A7E2D1] border border-black px-2 py-0.5 rounded-full">
+                            <Layers size={10} /> {childCount} added
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center flex-wrap gap-2 md:gap-3 md:shrink-0">
                     <button
                       onClick={() => openEditModal(course)}
                       className="flex items-center gap-1 font-bold text-sm border-2 border-black rounded-full px-3 py-1.5 bg-[#87CEFA] hover:bg-[#6cc0f5] transition-colors shadow-[2px_2px_0px_0px_#111]"
@@ -276,7 +284,7 @@ export default function EducatorDashboardPage() {
                       onClick={() => openAddModal(course.id)}
                       className="flex items-center gap-1 font-bold text-sm border-2 border-black rounded-full px-3 py-1.5 bg-[#F9E076] hover:bg-[#f5d84a] transition-colors shadow-[2px_2px_0px_0px_#111]"
                     >
-                      <Plus size={16} strokeWidth={3} /> Add Course
+                      <Plus size={16} strokeWidth={3} /> Add<span className="hidden sm:inline">&nbsp;Course</span>
                     </button>
                     <button
                       onClick={() => handleToggleView(course.id)}
@@ -295,7 +303,7 @@ export default function EducatorDashboardPage() {
                         e.stopPropagation();
                         handleDeleteCourse(course.id);
                       }}
-                      className="w-9 h-9 flex items-center justify-center bg-red-400 border-[3px] border-black rounded-xl hover:bg-red-500 hover:-translate-y-1 transition-all shadow-[4px_4px_0px_0px_#111] ml-2"
+                      className="w-9 h-9 shrink-0 flex items-center justify-center bg-red-400 border-[3px] border-black rounded-xl hover:bg-red-500 hover:-translate-y-1 transition-all shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] ml-auto md:ml-2"
                       title="Delete Class Category"
                     >
                       <Trash2 size={16} strokeWidth={3} />

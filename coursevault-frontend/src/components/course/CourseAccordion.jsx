@@ -6,8 +6,16 @@ import InlineVideoPlayer from './InlineVideoPlayer.jsx';
 import QuizModal from '../educator/QuizModal.jsx';
 import QuizTakeModal from './QuizTakeModal.jsx';
 
+const SECTIONS = [
+  { key: 'videos',    label: 'Videos',    Icon: Video,      colour: 'bg-[#87CEFA]' },
+  { key: 'pdfs',      label: 'PDFs',      Icon: FileText,   colour: 'bg-[#A7E2D1]' },
+  { key: 'documents', label: 'Documents', Icon: FilePlus,   colour: 'bg-[#F4DFD8]' },
+  { key: 'quizzes',   label: 'Quizzes',   Icon: HelpCircle, colour: 'bg-[#F9E076]' },
+];
+
 export default function CourseAccordion({
   module,
+  moduleNumber,
   isOpen,
   onToggle,
   onContentClick,
@@ -171,67 +179,118 @@ export default function CourseAccordion({
 
   const [reorderNotice, setReorderNotice] = useState('');
 
-  // Rearrange panel: a draft copy that exists only while the panel is open, so
-  // moves are free until Save and Cancel is a genuine discard.
-  const [isRearrangeOpen, setIsRearrangeOpen] = useState(false);
-  const [draftOrder, setDraftOrder] = useState(null);
-  const [isSavingOrder, setIsSavingOrder] = useState(false);
+  // contentId -> { percent, stage, renditionsDone, renditionsTotal }
+  const [encodeProgress, setEncodeProgress] = useState({});
+
 
   const displayItems = orderedItems;
 
-  // What the panel shows: its own draft, falling back to the live order.
-  const panelItems = draftOrder || displayItems;
-  const hasUnsavedOrder =
-    draftOrder !== null &&
-    draftOrder.some((item, i) => item.id !== displayItems[i]?.id);
-
-  const openRearrange = () => {
-    setDraftOrder(displayItems);
-    setIsRearrangeOpen(true);
-    setReorderNotice('');
-  };
-
-  const closeRearrange = () => {
-    setDraftOrder(null);
-    setIsRearrangeOpen(false);
-  };
-
   /**
-   * Move within the panel's draft only — no request until Save.
-   * Same swap the inline arrows used; only the target array differs.
+   * Which section an item belongs to.
+   *
+   * content_type is only ever 'video' or 'pdf' today — the upload modal sends
+   * 'pdf' for every non-video file — but .docx/.doc are already recognised
+   * server-side, so a Word file would be filed under PDFs. Extension and mime
+   * are checked before trusting content_type.
    */
-  const moveInDraft = (currentIndex, direction) => {
-    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-    if (targetIndex < 0 || targetIndex >= panelItems.length) return;
-    const reordered = [...panelItems];
-    [reordered[currentIndex], reordered[targetIndex]] =
-      [reordered[targetIndex], reordered[currentIndex]];
-    setDraftOrder(reordered);
+  const sectionFor = (entry) => {
+    if (entry.kind === 'quiz') return 'quizzes';
+
+    const c = entry.data;
+    const name = (c.file_name || c.title || '').toLowerCase();
+    const mime = (c.mime_type || '').toLowerCase();
+
+    if (c.content_type === 'video' || mime.startsWith('video/')) return 'videos';
+    if (/\.(docx?|pptx?|xlsx?|odt|txt)$/.test(name) || mime.includes('word') || mime.includes('officedocument')) {
+      return 'documents';
+    }
+    if (mime.includes('pdf') || name.endsWith('.pdf') || c.content_type === 'pdf') return 'pdfs';
+    return 'documents';
   };
 
-  /** Persist the draft: same endpoint, same 0..n-1 renumbering as before. */
-  const saveDraftOrder = async () => {
-    if (!draftOrder) return;
-    setIsSavingOrder(true);
+  // Buckets keep the priority order the items already arrived in.
+
+  const grouped = React.useMemo(() => {
+    const buckets = { videos: [], pdfs: [], documents: [], quizzes: [] };
+    for (const entry of displayItems) buckets[sectionFor(entry)].push(entry);
+    return buckets;
+  }, [displayItems]);
+
+  // Undefined means open; only an explicit false collapses a section.
+  const [openSections, setOpenSections] = useState({});
+  const toggleSection = (key) =>
+    setOpenSections((prev) => ({ ...prev, [key]: prev[key] === false }));
+
+  // ---- per-section rearranging -------------------------------------------
+  //
+  // Sections are rendered separately, so ordering only ever matters *within*
+  // one. A section reorder therefore permutes the items back into the same
+  // global slots that section already occupies — every other section keeps its
+  // position, and one flat payload still describes the whole module.
+  const [rearrangeSection, setRearrangeSection] = useState(null);
+  const [sectionDraft, setSectionDraft] = useState(null);
+  const [isSavingSection, setIsSavingSection] = useState(false);
+
+  const startSectionRearrange = (key) => {
+    setRearrangeSection(key);
+    setSectionDraft(grouped[key]);
     setReorderNotice('');
+  };
+
+  const cancelSectionRearrange = () => {
+    setRearrangeSection(null);
+    setSectionDraft(null);
+  };
+
+  const moveInSection = (index, direction) => {
+    const target = direction === 'up' ? index - 1 : index + 1;
+    if (!sectionDraft || target < 0 || target >= sectionDraft.length) return;
+    const next = [...sectionDraft];
+    [next[index], next[target]] = [next[target], next[index]];
+    setSectionDraft(next);
+  };
+
+  const sectionHasChanges =
+    sectionDraft !== null &&
+    rearrangeSection !== null &&
+    sectionDraft.some((item, i) => item.id !== (grouped[rearrangeSection] || [])[i]?.id);
+
+  const saveSectionOrder = async () => {
+    if (!sectionDraft || !rearrangeSection) return;
+    setIsSavingSection(true);
+    setReorderNotice('');
+
     try {
+      // The indices this section currently occupies in the flat list.
+      const slots = [];
+      displayItems.forEach((entry, i) => {
+        if (sectionFor(entry) === rearrangeSection) slots.push(i);
+      });
+
+      const next = [...displayItems];
+      slots.forEach((slot, k) => { next[slot] = sectionDraft[k]; });
+
       await fetchAPI(`/modules/${module.id}/reorder`, {
         method: 'PUT',
         body: JSON.stringify({
-          items: draftOrder.map(({ id, kind }) => ({ id, type: kind })),
+          items: next.map(({ id, kind }) => ({ id, type: kind })),
         }),
       });
+
       if (onRefreshCurriculum) await onRefreshCurriculum({ silent: true });
       if (loadQuizzes) await loadQuizzes();
-      setDraftOrder(null);
-      setIsRearrangeOpen(false);
+
+      setRearrangeSection(null);
+      setSectionDraft(null);
     } catch (err) {
-      console.error('[CourseAccordion] save order failed', err);
+      console.error('[CourseAccordion] section reorder failed', err);
       setReorderNotice(err.message || 'Could not save the new order.');
     } finally {
-      setIsSavingOrder(false);
+      setIsSavingSection(false);
     }
   };
+
+  // What the panel shows: its own draft, falling back to the live order.
 
   /**
    * Poll any still-transcoding video until it becomes playable.
@@ -245,39 +304,77 @@ export default function CourseAccordion({
     .map((c) => c.id)
     .join(',');
 
+  /*
+   * Videos go live after the first rendition and keep encoding the rest, so
+   * tracking cannot stop at 'processing'. These are already watchable — they
+   * are polled only to keep the "still improving" note honest, and they must
+   * never trigger the curriculum refetch, or a half-hour encode would refetch
+   * every five seconds for no change.
+   */
+  const pendingIds = contents
+    .filter((c) => c.status === 'ready' && c.metadata?.pending === true)
+    .map((c) => c.id)
+    .join(',');
+
   useEffect(() => {
-    if (!isOpen || !processingIds) return;
+    if (!isOpen || (!processingIds && !pendingIds)) return;
 
     let cancelled = false;
-    const ids = processingIds.split(',');
+    const busy = processingIds ? processingIds.split(',') : [];
+    const settling = pendingIds ? pendingIds.split(',') : [];
+    const ids = [...busy, ...settling];
 
     const check = async () => {
       const results = await Promise.all(
         ids.map((id) =>
           fetchAPI(`/content/${id}/status`)
-            .then((d) => d.status)
-            .catch(() => 'processing')
+            .then((d) => ({ id, ...d }))
+            .catch(() => ({ id, status: 'processing', progress: null }))
         )
       );
+      if (cancelled) return;
+
+      // Keep the live encode percentages so the row can show real movement
+      // instead of an indefinite "this can take a few minutes".
+      setEncodeProgress((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          if (r.progress) next[r.id] = r.progress;
+          else delete next[r.id];
+        }
+        return next;
+      });
+
       // Refresh only once something has actually left 'processing', so a long
       // transcode does not trigger a refetch every few seconds for nothing.
-      if (!cancelled && results.some((st) => st && st !== 'processing')) {
+      const finished = results.some(
+        (r) => busy.includes(r.id) && r.status && r.status !== 'processing'
+      );
+      // A pending item that quietly finishes its last rendition also needs one
+      // final refetch, otherwise the "still improving" note never clears.
+      const settled = results.some(
+        (r) => settling.includes(r.id) && !r.stillEncoding
+      );
+      if (finished || settled) {
         if (onRefreshCurriculum) onRefreshCurriculum({ silent: true });
       }
     };
 
+    check(); // don't make the first reading wait a full interval
     const timer = setInterval(check, 5000);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [isOpen, processingIds]);
+  }, [isOpen, processingIds, pendingIds]);
 
-  // A list built for one tab must never render under another.
+  // A list built for one tab must never render under another. Switching tabs
+  // therefore drops any in-progress rearrange rather than carrying a draft
+  // built from the previous tab's items across.
   useEffect(() => {
     setReorderNotice('');
-    setDraftOrder(null);
-    setIsRearrangeOpen(false);
+    setRearrangeSection(null);
+    setSectionDraft(null);
   }, [activeTabId]);
 
   /**
@@ -294,7 +391,7 @@ export default function CourseAccordion({
           onClick={() => onMove(index, 'up')}
           disabled={atTop}
           title="Move Up"
-          className={`p-0.5 border-[2px] border-black rounded ${
+          className={`p-1.5 md:p-0.5 border-2 border-black rounded ${
             atTop
               ? 'bg-gray-200 text-gray-400 cursor-not-allowed opacity-50'
               : 'bg-[#A7E2D1] hover:bg-[#86cdba] text-black shadow-[1px_1px_0px_0px_#111] active:translate-y-[1px] active:shadow-none'
@@ -306,7 +403,7 @@ export default function CourseAccordion({
           onClick={() => onMove(index, 'down')}
           disabled={atBottom}
           title="Move Down"
-          className={`p-0.5 border-[2px] border-black rounded ${
+          className={`p-1.5 md:p-0.5 border-2 border-black rounded ${
             atBottom
               ? 'bg-gray-200 text-gray-400 cursor-not-allowed opacity-50'
               : 'bg-[#F9E076] hover:bg-[#ebd056] text-black shadow-[1px_1px_0px_0px_#111] active:translate-y-[1px] active:shadow-none'
@@ -318,18 +415,165 @@ export default function CourseAccordion({
     );
   };
 
-  const renderQuizRow = (quiz, index) => (
+  /** One content row (video / pdf / document). */
+  const renderContentRow = (content) => {
+                const isVideo = content.content_type === 'video';
+                // A freshly uploaded video sits at 'processing' until ffmpeg
+                // finishes. It used to be filtered out of the API response
+                // entirely, so it simply vanished after upload.
+                const isProcessing = content.status === 'processing';
+                const isFailed = content.status === 'failed';
+                const isSelected = selectedContentIds.includes(content.id);
+                const isDone = completedContentIds.has(content.id); // 🌟 PROGRESS TRACKING
+
+                return (
+                  <div key={content.id} className={`border-2 border-black rounded-xl p-2.5 md:p-4 md:shadow-[2px_2px_0px_0px_#111] transition-colors ${isSelected ? 'bg-blue-50' : isDone ? 'bg-[#F3FBF8]' : 'bg-white'}`}>
+                    <div className="flex justify-between items-center gap-2">
+                      {/* min-w-0 + flex-1: without it this group refuses to
+                          shrink, so on a phone the title pushes the badge and
+                          buttons past the card edge instead of truncating. */}
+                      <div className="flex items-center gap-2.5 md:gap-4 min-w-0 flex-1">
+                        {isCreator && (
+                          <input
+                            type="checkbox"
+                            className="w-5 h-5 border-2 border-black rounded cursor-pointer accent-[#F26B4D]"
+                            checked={isSelected}
+                            onChange={() => toggleContentSelection(content.id)}
+                          />
+                        )}
+
+
+                        <div className={`relative w-9 h-9 md:w-10 md:h-10 shrink-0 rounded-full border-2 border-black flex items-center justify-center ${isVideo ? 'bg-[#87CEFA]' : 'bg-[#A7E2D1]'}`}>
+                          {isVideo ? <Video size={18} /> : <FileText size={18} />}
+                          {isDone && (
+                            <CheckCircle2
+                              size={16}
+                              strokeWidth={2.5}
+                              className="absolute -bottom-1 -right-1 bg-white text-[#2FA36B] rounded-full border-2 border-black"
+                            />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 line-clamp-2 break-words">{content.title}</h4>
+                          {!isVideo && <p className="text-xs md:text-sm font-medium text-gray-500 truncate">PDF • {formatSize(content.file_size_bytes)}</p>}
+                          {isVideo && !isProcessing && !isFailed && (
+                            <p className="text-xs md:text-sm font-medium text-gray-500 flex items-center gap-1.5">
+                              Video Lesson
+                              {/* Watchable already; higher qualities still
+                                  encoding. Said plainly so a creator doesn't
+                                  think the upload half-failed. */}
+                              {content.metadata?.pending && (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                  HD still encoding
+                                  {encodeProgress[content.id]
+                                    ? ` · ${encodeProgress[content.id].percent}%`
+                                    : ''}
+                                </span>
+                              )}
+                            </p>
+                          )}
+                          {isProcessing && (() => {
+                            const prog = encodeProgress[content.id];
+                            return (
+                              <div className="mt-0.5">
+                                <p className="text-xs md:text-sm font-bold text-amber-700 flex items-center gap-1.5">
+                                  <span className="w-2 h-2 shrink-0 rounded-full bg-amber-500 animate-pulse" />
+                                  {prog ? (
+                                    <span className="truncate">
+                                      Encoding {prog.stage}
+                                      <span className="hidden sm:inline">
+                                        {' '}({prog.renditionsDone + 1} of {prog.renditionsTotal})
+                                      </span>
+                                      {' · '}{prog.percent}%
+                                    </span>
+                                  ) : (
+                                    <span className="truncate">
+                                      Queued<span className="hidden sm:inline"> — starting shortly</span>
+                                    </span>
+                                  )}
+                                </p>
+                                {/* A real bar: an indefinite spinner gave no way
+                                    to tell a slow encode from a stuck one. */}
+                                <div className="mt-1 h-1.5 w-full max-w-[220px] rounded-full bg-amber-100 border border-amber-300 overflow-hidden">
+                                  <div
+                                    className="h-full bg-amber-500 transition-[width] duration-700 ease-out"
+                                    style={{ width: `${prog?.percent ?? 0}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          {isFailed && (
+                            <p className="text-xs md:text-sm font-bold text-red-700">
+                              Processing failed<span className="hidden sm:inline"> — check the server log, then re-upload</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
+                        {content.preview && <span className="hidden sm:inline-block bg-[#F26B4D] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase whitespace-nowrap">Preview</span>}
+                        {/* Hidden on phones: the badge is what was being clipped,
+                            and the green tick on the icon already says "done". */}
+                        {isDone && (
+                          <span className="hidden sm:inline-block bg-[#A7E2D1] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase whitespace-nowrap">Completed</span>
+                        )}
+
+                        {isVideo ? (
+                          <button
+                            onClick={() => setExpandedVideoId(prev => prev === content.id ? null : content.id)}
+                            disabled={isProcessing || isFailed}
+                            title={isProcessing ? 'Still transcoding' : isFailed ? 'Transcoding failed' : undefined}
+                            className={`border-2 border-black rounded-lg px-2.5 md:px-4 py-1.5 md:py-2 font-bold text-xs md:text-sm shrink-0 transition-colors ${
+                              isProcessing || isFailed
+                                ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                : 'bg-white hover:bg-[#F9E076]'
+                            }`}
+                          >
+                            {isProcessing ? 'Processing' : isFailed ? 'Failed' : expandedVideoId === content.id ? 'Close' : isDone ? 'Rewatch' : 'Watch'}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => onContentClick(content)}
+                            className="bg-white border-2 border-black rounded-lg px-2.5 md:px-4 py-1.5 md:py-2 font-bold text-xs md:text-sm shrink-0 hover:bg-[#F9E076] transition-colors"
+                          >
+                            {isDone ? 'Review' : 'Read'}
+                          </button>
+                        )}
+
+                        {isCreator && (
+                          <button
+                            title="Delete Asset"
+                            onClick={(e) => handleDeleteContent(e, content.id)}
+                            className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
+                          >
+                            <Trash2 size={14} strokeWidth={3} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {isVideo && expandedVideoId === content.id && (
+                      <div className="mt-4 border-t-2 border-dashed border-gray-300 pt-4">
+                        <InlineVideoPlayer content={content} courseId={courseId} isEnrolled={isEnrolled} />
+                      </div>
+                    )}
+                  </div>
+                );
+  };
+
+  const renderQuizRow = (quiz) => (
     <div
       key={quiz.id}
-      className={`border-2 border-black rounded-xl p-4 shadow-[2px_2px_0px_0px_#111] ${
+      className={`border-2 border-black rounded-xl p-2.5 md:p-4 md:shadow-[2px_2px_0px_0px_#111] ${
         quiz.is_completed ? 'bg-[#F3FBF8]' : 'bg-white'
       }`}
     >
       <div className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2.5 md:gap-4 min-w-0 flex-1">
           {/* Spacer matching the content rows' checkbox, so icons line up. */}
           {isCreator && <div className="w-5 h-5 shrink-0" />}
-          <div className="relative w-10 h-10 rounded-full border-2 border-black flex items-center justify-center bg-[#F4DFD8]">
+          <div className="relative w-9 h-9 md:w-10 md:h-10 shrink-0 rounded-full border-2 border-black flex items-center justify-center bg-[#F4DFD8]">
             <HelpCircle size={18} />
             {quiz.is_completed && (
               <CheckCircle2
@@ -339,30 +583,30 @@ export default function CourseAccordion({
               />
             )}
           </div>
-          <div>
-            <h4 className="font-bold text-lg leading-none mb-1">{quiz.title}</h4>
-            <p className="text-sm font-medium text-gray-500">
+          <div className="min-w-0 flex-1">
+            <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 line-clamp-2 break-words">{quiz.title}</h4>
+            <p className="text-xs md:text-sm font-medium text-gray-500 truncate">
               {quiz.question_count} question{quiz.question_count === 1 ? '' : 's'}
               {quiz.is_completed && ` • Best score: ${quiz.user_score}%`}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
           {quiz.is_completed && (
-            <span className="bg-[#A7E2D1] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase">
+            <span className="hidden sm:inline-block bg-[#A7E2D1] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase whitespace-nowrap">
               Completed
             </span>
           )}
           <button
             onClick={() => setTakingQuizId(quiz.id)}
-            className="bg-white border-2 border-black rounded-lg px-4 py-2 font-bold text-sm hover:bg-[#F9E076] transition-colors"
+            className="bg-white border-2 border-black rounded-lg px-2.5 md:px-4 py-1.5 md:py-2 font-bold text-xs md:text-sm shrink-0 hover:bg-[#F9E076] transition-colors"
           >
             {quiz.is_completed ? 'Retake Quiz' : 'Take Quiz'}
           </button>
           {isCreator && (
             <button
               onClick={() => handleDeleteQuiz(quiz.id)}
-              className="w-9 h-9 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
+              className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
             >
               <Trash2 size={14} strokeWidth={3} />
             </button>
@@ -373,45 +617,103 @@ export default function CourseAccordion({
   );
 
 
+  // Counts drive both the summary line and the thumbnail strip.
+  const moduleCompleted =
+    contents.filter((c) => completedContentIds.has(c.id)).length +
+    quizzes.filter((q) => q.is_completed).length;
+  const moduleTotal = contents.length + quizzes.length;
+  const pct = moduleTotal > 0 ? Math.round((moduleCompleted / moduleTotal) * 100) : 0;
+
+  const typeCounts = React.useMemo(() => {
+    const counts = { videos: 0, pdfs: 0, documents: 0, quizzes: 0 };
+    for (const entry of orderedItems) counts[sectionFor(entry)] += 1;
+    return counts;
+  }, [orderedItems]);
+
   return (
-    <div className="bg-white border-2 border-black rounded-xl overflow-hidden shadow-[4px_4px_0px_0px_#111] mb-6">
+    <div className="bg-white border-2 border-black rounded-xl overflow-hidden shadow-[2px_2px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111] mb-4 md:mb-6">
       <div
-        className="p-6 flex justify-between items-center cursor-pointer hover:bg-gray-50 transition-colors"
+        className="p-3 md:p-6 flex items-start gap-3 cursor-pointer hover:bg-gray-50 transition-colors"
         onClick={onToggle}
       >
-        <h3 className="font-bold text-xl flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-[#F4DFD8] border-2 border-black flex items-center justify-center text-sm font-black">
-            {isOpen ? '-' : '+'}
-          </div>
-          {module.title}
-        </h3>
+        {/* Play Store detail style: a square "icon" carrying the module number,
+            then title, meta line and a thumbnail strip of what is inside. */}
+        <div className="w-12 h-12 md:w-14 md:h-14 shrink-0 rounded-xl bg-[#F4DFD8] border-2 border-black flex items-center justify-center font-black text-lg md:text-xl">
+          {moduleNumber ?? '•'}
+        </div>
 
-        <div className="flex items-center gap-3">
-          {isCreator && (
-            <div className="flex gap-2">
-              <button title="Edit Module" onClick={(e) => { e.stopPropagation(); onEditModule(module); }} className="w-8 h-8 flex items-center justify-center bg-[#F9E076] border-2 border-black rounded-md hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#000]">
-                <Edit size={14} strokeWidth={3} />
-              </button>
-              <button title="Delete Module" onClick={(e) => { e.stopPropagation(); onDeleteModule(module.id); }} className="w-8 h-8 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#000]">
-                <Trash2 size={14} strokeWidth={3} />
-              </button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="font-bold text-base md:text-xl leading-tight line-clamp-2 min-w-0">
+              {module.title}
+            </h3>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              {isCreator && (
+                <>
+                  <button
+                    title="Edit Module"
+                    onClick={(e) => { e.stopPropagation(); onEditModule(module); }}
+                    className="w-7 h-7 md:w-8 md:h-8 flex items-center justify-center bg-[#F9E076] border-2 border-black rounded-md hover:scale-105 transition-transform md:shadow-[2px_2px_0px_0px_#000]"
+                  >
+                    <Edit size={13} strokeWidth={3} />
+                  </button>
+                  <button
+                    title="Delete Module"
+                    onClick={(e) => { e.stopPropagation(); onDeleteModule(module.id); }}
+                    className="w-7 h-7 md:w-8 md:h-8 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform md:shadow-[2px_2px_0px_0px_#000]"
+                  >
+                    <Trash2 size={13} strokeWidth={3} />
+                  </button>
+                </>
+              )}
+              <ChevronDown
+                size={20}
+                strokeWidth={3}
+                className={`shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+              />
+            </div>
+          </div>
+
+          {/* Content mix, the way a store lists what a bundle contains. */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5 text-[11px] md:text-xs font-bold text-gray-500">
+            {typeCounts.videos > 0 && (
+              <span className="flex items-center gap-1"><Video size={12} /> {typeCounts.videos}</span>
+            )}
+            {typeCounts.pdfs > 0 && (
+              <span className="flex items-center gap-1"><FileText size={12} /> {typeCounts.pdfs}</span>
+            )}
+            {typeCounts.documents > 0 && (
+              <span className="flex items-center gap-1"><FilePlus size={12} /> {typeCounts.documents}</span>
+            )}
+            {typeCounts.quizzes > 0 && (
+              <span className="flex items-center gap-1"><HelpCircle size={12} /> {typeCounts.quizzes}</span>
+            )}
+            {moduleTotal === 0 && <span>Empty</span>}
+            {moduleTotal > 0 && (
+              <>
+                <span className="text-gray-300">|</span>
+                <span className={moduleCompleted === moduleTotal ? 'text-green-700' : ''}>
+                  {moduleCompleted}/{moduleTotal} done
+                </span>
+              </>
+            )}
+          </div>
+
+          {moduleTotal > 0 && (
+            <div className="mt-2 h-1.5 w-full max-w-[220px] rounded-full bg-gray-200 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${pct === 100 ? 'bg-[#2FA36B]' : 'bg-[#F26B4D]'}`}
+                style={{ width: `${pct}%` }}
+              />
             </div>
           )}
-          <span className="font-bold text-gray-500 text-sm ml-2">
-            {(() => {
-              const moduleCompleted =
-                contents.filter(c => completedContentIds.has(c.id)).length +
-                quizzes.filter(q => q.is_completed).length;
-              const moduleTotal = contents.length + quizzes.length;
-              return moduleTotal > 0 ? `${moduleCompleted}/${moduleTotal} Completed` : '0 Items';
-            })()}
-          </span>
         </div>
       </div>
 
       {isOpen && (
         <div className="border-t-2 border-black bg-gray-50 flex flex-col animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="flex items-end gap-x-2 overflow-x-auto pt-4 px-4 bg-[#F4DFD8] border-b-2 border-black scrollbar-hide pb-0">
+          <div className="flex items-end gap-x-2 overflow-x-auto pt-3 md:pt-4 px-3 md:px-4 bg-[#F4DFD8] border-b-2 border-black scrollbar-hide pb-0">
             <button
               onClick={() => setActiveTabId(null)}
               className={`px-6 py-2.5 border-2 border-black border-b-0 rounded-t-xl font-bold transition-all relative ${activeTabId === null
@@ -456,17 +758,17 @@ export default function CourseAccordion({
             )}
           </div>
 
-          <div className="p-8 bg-white min-h-[300px] relative">
+          <div className="p-3 md:p-8 bg-white min-h-[140px] md:min-h-[300px] relative">
             {isCreator && (
-              <div className="flex flex-wrap gap-4 mb-8 pb-6 border-b-2 border-dashed border-gray-300">
-                <button onClick={() => onAddContent(module.id, activeTabId)} className="flex items-center gap-2 px-5 py-2.5 bg-[#87CEFA] border-2 border-black rounded-xl font-bold text-sm shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
-                  <Video size={18} strokeWidth={3} /> Add Video Here
+              <div className="flex flex-wrap gap-2 md:gap-4 mb-4 md:mb-8 pb-4 md:pb-6 border-b-2 border-dashed border-gray-300">
+                <button onClick={() => onAddContent(module.id, activeTabId)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#87CEFA] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
+                  <Video size={16} strokeWidth={3} className="md:w-[18px] md:h-[18px]" /> <span className="md:hidden">Video</span><span className="hidden md:inline">Add Video Here</span>
                 </button>
-                <button onClick={() => onAddPDF(module.id, activeTabId)} className="flex items-center gap-2 px-5 py-2.5 bg-[#A7E2D1] border-2 border-black rounded-xl font-bold text-sm shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
-                  <FilePlus size={18} strokeWidth={3} /> Add PDF Here
+                <button onClick={() => onAddPDF(module.id, activeTabId)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#A7E2D1] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
+                  <FilePlus size={16} strokeWidth={3} className="md:w-[18px] md:h-[18px]" /> <span className="md:hidden">PDF</span><span className="hidden md:inline">Add PDF Here</span>
                 </button>
-                <button onClick={() => setIsQuizModalOpen(true)} className="flex items-center gap-2 px-5 py-2.5 bg-[#F4DFD8] border-2 border-black rounded-xl font-bold text-sm shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
-                  <HelpCircle size={18} strokeWidth={3} /> Create Quiz Here
+                <button onClick={() => setIsQuizModalOpen(true)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#F4DFD8] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
+                  <HelpCircle size={16} strokeWidth={3} className="md:w-[18px] md:h-[18px]" /> <span className="md:hidden">Quiz</span><span className="hidden md:inline">Create Quiz Here</span>
                 </button>
               </div>
             )}
@@ -490,92 +792,8 @@ export default function CourseAccordion({
               </div>
             )}
 
-            {/* ------------------------------ Rearrange section ---------- */}
-            {isCreator && displayItems.length > 1 && (
-              <div className="mb-4">
-                {!isRearrangeOpen ? (
-                  <button
-                    type="button"
-                    onClick={openRearrange}
-                    className="flex items-center gap-2 px-4 py-2 border-2 border-black rounded-xl font-bold text-sm bg-white hover:bg-[#F9E076] shadow-[2px_2px_0px_0px_#111] transition-colors"
-                  >
-                    <span className="flex flex-col leading-none">
-                      <ChevronUp size={11} strokeWidth={4} />
-                      <ChevronDown size={11} strokeWidth={4} />
-                    </span>
-                    Rearrange Order
-                  </button>
-                ) : (
-                  <div className="border-2 border-black rounded-xl bg-[#FDF6E3] shadow-[3px_3px_0px_0px_#111] overflow-hidden">
-                    <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 border-b-2 border-black bg-[#F9E076]">
-                      <div className="font-black text-sm uppercase">
-                        Rearrange Order
-                        {hasUnsavedOrder && (
-                          <span className="ml-2 text-[11px] font-bold text-[#B45309] normal-case">
-                            unsaved changes
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={closeRearrange}
-                          disabled={isSavingOrder}
-                          className="px-3 py-1.5 border-2 border-black rounded-lg font-bold text-xs bg-white hover:bg-gray-100 disabled:opacity-50"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={saveDraftOrder}
-                          disabled={isSavingOrder || !hasUnsavedOrder}
-                          className="px-4 py-1.5 border-2 border-black rounded-lg font-bold text-xs bg-[#A7E2D1] hover:bg-[#86cdba] shadow-[2px_2px_0px_0px_#111] disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          {isSavingOrder ? 'Saving...' : 'Save Order'}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="p-3 flex flex-col gap-2 max-h-[380px] overflow-y-auto">
-                      {panelItems.map((entry, index) => {
-                        const isQuiz = entry.kind === 'quiz';
-                        const title = entry.data.title;
-                        const subtitle = isQuiz
-                          ? `Quiz • ${entry.data.question_count} question${entry.data.question_count === 1 ? '' : 's'}`
-                          : `${(entry.data.content_type || 'file').toUpperCase()}${
-                              entry.data.file_size_bytes ? ` • ${formatSize(entry.data.file_size_bytes)}` : ''
-                            }`;
-                        return (
-                          <div
-                            key={entry.id}
-                            className="flex items-center gap-3 bg-white border-2 border-black rounded-lg px-3 py-2 shadow-[2px_2px_0px_0px_#111]"
-                          >
-                            <span className="font-black text-xs text-gray-400 w-5 shrink-0">
-                              {index + 1}
-                            </span>
-                            {renderMoveArrows(index, moveInDraft, panelItems.length)}
-                            <div
-                              className={`w-8 h-8 shrink-0 rounded-full border-2 border-black flex items-center justify-center ${
-                                isQuiz ? 'bg-[#F4DFD8]' : entry.data.content_type === 'video' ? 'bg-[#87CEFA]' : 'bg-[#A7E2D1]'
-                              }`}
-                            >
-                              {isQuiz ? <HelpCircle size={14} /> : entry.data.content_type === 'video' ? <Video size={14} /> : <FileText size={14} />}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold text-sm leading-tight truncate">{title}</div>
-                              <div className="text-[11px] font-medium text-gray-500">{subtitle}</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
             {reorderNotice && (
-              <div className="mb-3 flex items-start justify-between gap-3 border-2 border-amber-400 bg-amber-50 text-amber-900 rounded-lg px-3 py-2 text-sm font-bold">
+              <div className="mb-3 flex items-start justify-between gap-2 flex-wrap border-2 border-amber-400 bg-amber-50 text-amber-900 rounded-lg px-3 py-2 text-xs md:text-sm font-bold">
                 <span>{reorderNotice}</span>
                 <button
                   type="button"
@@ -594,113 +812,108 @@ export default function CourseAccordion({
               </div>
             ) : (
               <div className="flex flex-col gap-4">
-                {/* One list: PDFs, videos and quizzes, ordered by priority.
-                    Each branch renders its own card but shares the arrows, so
-                    an item can be moved past any other type. */}
-                {displayItems.map((entry, index) => {
-                  if (entry.kind === 'quiz') return renderQuizRow(entry.data, index);
-                  const content = entry.data;
-                  const isVideo = content.content_type === 'video';
-                  // A freshly uploaded video sits at 'processing' until ffmpeg
-                  // finishes. It used to be filtered out of the API response
-                  // entirely, so it simply vanished after upload.
-                  const isProcessing = content.status === 'processing';
-                  const isFailed = content.status === 'failed';
-                  const isSelected = selectedContentIds.includes(content.id);
-                  const isDone = completedContentIds.has(content.id); // 🌟 PROGRESS TRACKING
+                {SECTIONS.map(({ key, label, Icon, colour }) => {
+                  const items = grouped[key];
+                  if (!items || items.length === 0) return null; // hide empty sections
+                  const open = openSections[key] !== false; // default open
+                  const arranging = rearrangeSection === key;
+                  const rows = arranging && sectionDraft ? sectionDraft : items;
 
                   return (
-                    <div key={content.id} className={`border-2 border-black rounded-xl p-4 shadow-[2px_2px_0px_0px_#111] transition-colors ${isSelected ? 'bg-blue-50' : isDone ? 'bg-[#F3FBF8]' : 'bg-white'}`}>
-                      <div className="flex justify-between items-center">
-                        <div className="flex items-center gap-4">
-                          {isCreator && (
-                            <input
-                              type="checkbox"
-                              className="w-5 h-5 border-2 border-black rounded cursor-pointer accent-[#F26B4D]"
-                              checked={isSelected}
-                              onChange={() => toggleContentSelection(content.id)}
+                    <section key={key} className="border-2 border-black rounded-xl overflow-hidden md:shadow-[2px_2px_0px_0px_#111]">
+                      <div className={`border-b-2 border-black ${colour}`}>
+                        <div className="flex items-center gap-1 md:gap-2 px-2.5 md:px-4 py-2 md:py-2.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleSection(key)}
+                            aria-expanded={open}
+                            className="flex items-center gap-1.5 md:gap-2 font-black text-xs md:text-sm uppercase min-w-0 flex-1 text-left"
+                          >
+                            <Icon size={15} strokeWidth={2.5} className="shrink-0" />
+                            <span className="truncate">{label}</span>
+                            <span className="text-[10px] md:text-[11px] font-bold normal-case opacity-70 shrink-0">
+                              ({items.length})
+                            </span>
+                          </button>
+
+                          {/* Reordering only matters within a section, so the
+                              control lives here rather than in one flat list. */}
+                          {isCreator && open && items.length > 1 && !arranging && (
+                            <button
+                              type="button"
+                              onClick={() => startSectionRearrange(key)}
+                              title={`Reorder ${label}`}
+                              className="shrink-0 flex items-center gap-1 px-2 py-1 bg-white border-2 border-black rounded-lg font-bold text-[10px] md:text-xs hover:bg-[#F9E076] transition-colors"
+                            >
+                              <ChevronUp size={10} strokeWidth={4} className="-mr-0.5" />
+                              <ChevronDown size={10} strokeWidth={4} />
+                              <span className="hidden sm:inline">Reorder</span>
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => toggleSection(key)}
+                            aria-label={open ? 'Collapse' : 'Expand'}
+                            className="shrink-0 p-0.5"
+                          >
+                            <ChevronDown
+                              size={18}
+                              strokeWidth={3}
+                              className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
                             />
-                          )}
-
-
-                          <div className={`relative w-10 h-10 rounded-full border-2 border-black flex items-center justify-center ${isVideo ? 'bg-[#87CEFA]' : 'bg-[#A7E2D1]'}`}>
-                            {isVideo ? <Video size={18} /> : <FileText size={18} />}
-                            {isDone && (
-                              <CheckCircle2
-                                size={16}
-                                strokeWidth={2.5}
-                                className="absolute -bottom-1 -right-1 bg-white text-[#2FA36B] rounded-full border-2 border-black"
-                              />
-                            )}
-                          </div>
-                          <div>
-                            <h4 className="font-bold text-lg leading-none mb-1">{content.title}</h4>
-                            {!isVideo && <p className="text-sm font-medium text-gray-500">PDF • {formatSize(content.file_size_bytes)}</p>}
-                            {isVideo && !isProcessing && !isFailed && (
-                              <p className="text-sm font-medium text-gray-500">Video Lesson</p>
-                            )}
-                            {isProcessing && (
-                              <p className="text-sm font-bold text-amber-700 flex items-center gap-1.5">
-                                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                                Processing — this can take a few minutes
-                              </p>
-                            )}
-                            {isFailed && (
-                              <p className="text-sm font-bold text-red-700">
-                                Processing failed — check the server log, then re-upload
-                              </p>
-                            )}
-                          </div>
+                          </button>
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          {content.preview && <span className="bg-[#F26B4D] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase">Preview</span>}
-                          {isDone && (
-                            <span className="bg-[#A7E2D1] text-black text-[10px] font-black px-2 py-0.5 border-2 border-black rounded uppercase">Completed</span>
-                          )}
-
-                          {isVideo ? (
-                            <button
-                              onClick={() => setExpandedVideoId(prev => prev === content.id ? null : content.id)}
-                              disabled={isProcessing || isFailed}
-                              title={isProcessing ? 'Still transcoding' : isFailed ? 'Transcoding failed' : undefined}
-                              className={`border-2 border-black rounded-lg px-4 py-2 font-bold text-sm transition-colors ${
-                                isProcessing || isFailed
-                                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                  : 'bg-white hover:bg-[#F9E076]'
-                              }`}
-                            >
-                              {isProcessing ? 'Processing' : isFailed ? 'Failed' : expandedVideoId === content.id ? 'Close' : isDone ? 'Rewatch' : 'Watch'}
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => onContentClick(content)}
-                              className="bg-white border-2 border-black rounded-lg px-4 py-2 font-bold text-sm hover:bg-[#F9E076] transition-colors"
-                            >
-                              {isDone ? 'Review' : 'Read'}
-                            </button>
-                          )}
-
-                          {isCreator && (
-                            <button
-                              title="Delete Asset"
-                              onClick={(e) => handleDeleteContent(e, content.id)}
-                              className="w-9 h-9 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
-                            >
-                              <Trash2 size={14} strokeWidth={3} />
-                            </button>
-                          )}
-                        </div>
+                        {arranging && (
+                          <div className="flex items-center justify-between gap-2 px-2.5 md:px-4 pb-2 flex-wrap">
+                            <span className="text-[10px] md:text-xs font-bold">
+                              Arrange with the arrows
+                              {sectionHasChanges && <span className="ml-1.5 text-[#B45309]">unsaved</span>}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={cancelSectionRearrange}
+                                disabled={isSavingSection}
+                                className="px-2.5 py-1 bg-white border-2 border-black rounded-lg font-bold text-[10px] md:text-xs disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={saveSectionOrder}
+                                disabled={isSavingSection || !sectionHasChanges}
+                                className="px-3 py-1 bg-[#A7E2D1] border-2 border-black rounded-lg font-bold text-[10px] md:text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {isSavingSection ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {isVideo && expandedVideoId === content.id && (
-                        <div className="mt-4 border-t-2 border-dashed border-gray-300 pt-4">
-                          <InlineVideoPlayer content={content} courseId={courseId} isEnrolled={isEnrolled} />
+
+                      {open && (
+                        <div className="p-2 md:p-3 flex flex-col gap-2 md:gap-3 bg-gray-50">
+                          {rows.map((entry, i) => (
+                            <div key={entry.id} className="flex items-stretch gap-2">
+                              {arranging && (
+                                <div className="shrink-0 flex items-center">
+                                  {renderMoveArrows(i, moveInSection, rows.length)}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                {entry.kind === 'quiz'
+                                  ? renderQuizRow(entry.data)
+                                  : renderContentRow(entry.data)}
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
-                    </div>
+                    </section>
                   );
                 })}
-
               </div>
             )}
           </div>

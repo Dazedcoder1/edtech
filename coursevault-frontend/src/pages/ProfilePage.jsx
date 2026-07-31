@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Phone, Lock, Check, AlertTriangle, Shield } from 'lucide-react';
+import { User, Mail, Phone, Lock, Check, AlertTriangle } from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
@@ -39,9 +39,7 @@ export default function ProfilePage() {
   const { user, applyProfileUpdate } = useAuth();
 
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [currentPassword, setCurrentPassword] = useState('');
 
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState('');
@@ -57,26 +55,14 @@ export default function ProfilePage() {
   useEffect(() => {
     if (user) {
       setName(user.name || '');
-      setEmail(user.email || '');
       setPhone(user.phone || '');
     }
   }, [user]);
-
-  // Email is the login identifier, so the server demands the password before
-  // changing it. Surfacing that field only when the address actually differs
-  // keeps the common case (fixing a typo in your name) friction-free.
-  const emailChanged =
-    !!user && email.trim().toLowerCase() !== (user.email || '').toLowerCase();
 
   const saveProfile = async (e) => {
     e.preventDefault();
     setProfileError('');
     setProfileSuccess('');
-
-    if (emailChanged && !currentPassword) {
-      setProfileError('Enter your current password to change your email address.');
-      return;
-    }
 
     setSavingProfile(true);
     try {
@@ -85,16 +71,11 @@ export default function ProfilePage() {
         body: JSON.stringify({
           name: name.trim(),
           phone: phone.trim(),
-          email: email.trim(),
-          ...(emailChanged ? { currentPassword } : {}),
         }),
       });
 
       applyProfileUpdate(result);
-      setCurrentPassword('');
-      setProfileSuccess(
-        emailChanged ? 'Saved. Your sign-in email has changed.' : 'Contact info saved.'
-      );
+      setProfileSuccess('Contact info saved.');
     } catch (err) {
       setProfileError(err.message || 'Could not save your details.');
     } finally {
@@ -167,15 +148,25 @@ export default function ProfilePage() {
           />
         </Field>
 
-        <Field icon={Mail} label="Email address" hint="This is what you sign in with.">
-          <input
-            type="email"
-            className={inputClass}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            required
-          />
+        {/*
+          Shown but not editable. Rendering it as plain text rather than a
+          disabled <input> avoids implying it might become editable, and the
+          server rejects a changed address regardless — this is the label on
+          the rule, not the rule itself.
+        */}
+        <Field
+          icon={Mail}
+          label="Email address"
+          hint="This is what you sign in with, and it can't be changed."
+        >
+          <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
+            <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
+              {user.email}
+            </span>
+            <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+              <Lock size={12} strokeWidth={3} /> Locked
+            </span>
+          </div>
         </Field>
 
         <Field icon={Phone} label="Phone number" hint="Optional.">
@@ -188,25 +179,6 @@ export default function ProfilePage() {
           />
         </Field>
 
-        {emailChanged && (
-          <div className="border-2 border-amber-400 bg-amber-50 rounded-lg p-3 flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-sm font-bold text-amber-900">
-              <Shield size={14} strokeWidth={3} /> Confirm it's you
-            </span>
-            <p className="text-xs text-amber-800">
-              You're changing the email you sign in with. Enter your current password
-              to confirm.
-            </p>
-            <input
-              type="password"
-              className={inputClass}
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="Current password"
-              autoComplete="current-password"
-            />
-          </div>
-        )}
 
         <div className="flex justify-end">
           <Button

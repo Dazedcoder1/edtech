@@ -278,6 +278,99 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
 });
 
 
+// ============================================================
+// IMAGES (course thumbnails + quiz diagrams)
+// ============================================================
+//
+// Both routes were lost in a merge, so CourseModal's thumbnail picker and
+// QuizModal's "Add Diagram" button posted to a route that did not exist and
+// got a 404 back.
+//
+// These must stay ABOVE `GET /:id`: Express matches in declaration order, so
+// registering them later would let `/:id` capture "stream-image" as an id and
+// return "content not found" instead of the image.
+//
+// Unlike /upload, these never touch content_items — an image is not a lesson,
+// and giving it a content row would put thumbnails in the curriculum list.
+
+// POST /api/content/upload-image
+router.post("/upload-image", authMiddleware, upload.single("file"), async (req, res) => {
+    try {
+        const file = req.file;
+        const folder = (req.query.folder || "misc").replace(/[^a-zA-Z0-9_-]/g, "");
+
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload images" });
+        }
+        if (!file) return res.status(400).json({ error: "No file uploaded" });
+        if (!file.mimetype.startsWith("image/")) {
+            return res.status(400).json({ error: "Only image files are allowed" });
+        }
+
+        const fileHash = generateFileHash(file.buffer);
+        const extension = getFileExtension(file.originalname) || ".jpg";
+        const r2Key = `images/${folder}/${fileHash}${extension}`;
+
+        await r2Client.send(new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: r2Key,
+            Body: file.buffer,
+            ContentType: file.mimetype
+        }));
+
+        // Served back through our own endpoint rather than a public R2 URL, so
+        // the bucket can stay private.
+        const imageUrl = `/api/content/stream-image?key=${encodeURIComponent(r2Key)}`;
+
+        res.status(201).json({ success: true, imageUrl, key: r2Key });
+    } catch (err) {
+        console.error("Image upload error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// GET /api/content/stream-image
+//
+// Deliberately unauthenticated. An <img src> cannot send an Authorization
+// header, and the alternative — putting the JWT in the query string — would
+// leak it into browser history, access logs and Referer headers.
+//
+// Safe because the route is not a general R2 proxy: it serves only keys under
+// images/, and those keys are content hashes, so a URL cannot be guessed. The
+// images themselves (course thumbnails) already appear on public listings.
+router.get("/stream-image", async (req, res) => {
+    try {
+        const { key } = req.query;
+        if (!key) return res.status(400).json({ error: "key is required" });
+
+        // Restricted to images/ on purpose: without this the route would be a
+        // generic R2 proxy and any authenticated user could read every object
+        // in the bucket, including course videos and PDFs.
+        if (!key.startsWith("images/")) {
+            return res.status(400).json({ error: "Invalid image key" });
+        }
+
+        const r2Response = await r2Client.send(
+            new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })
+        );
+
+        const chunks = [];
+        for await (const chunk of r2Response.Body) chunks.push(chunk);
+        const imageBuffer = Buffer.concat(chunks);
+
+        res.setHeader("Content-Type", r2Response.ContentType || "image/jpeg");
+        res.setHeader("Content-Length", imageBuffer.length);
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        res.send(imageBuffer);
+    } catch (err) {
+        console.error("Stream image error:", err);
+        if (err.name === "NoSuchKey" || err.Code === "NoSuchKey") {
+            return res.status(404).json({ error: "Image not found in storage" });
+        }
+        res.status(500).json({ error: "Failed to load image", details: err.message });
+    }
+});
+
 // GET /api/content
 router.get("/", async (req, res) => {
     try {
@@ -426,7 +519,34 @@ router.get("/:id/status", async (req, res) => {
     try {
         const result = await pool.query(`SELECT status, metadata FROM content_items WHERE id = $1`, [req.params.id]);
         if (result.rows.length === 0) return res.status(404).json({ error: "Content not found" });
-        res.json({ status: result.rows[0].status, metadata: result.rows[0].metadata });
+
+        const row = result.rows[0];
+
+        /*
+         * activeJobs is in-memory, so it is the live view while this process is
+         * doing the work and simply absent after a restart or once the job is
+         * done. The DB row is the durable answer; the job only adds detail on
+         * top of it, and the client must cope with progress being null.
+         */
+        const job = activeJobs.get(req.params.id);
+
+        res.json({
+            status: row.status,
+            metadata: row.metadata,
+            // True once at least one rendition is live but others are still
+            // encoding — the video is watchable and still improving.
+            stillEncoding: Boolean(job) || row.metadata?.pending === true,
+            progress: job
+                ? {
+                      percent: job.percent ?? 0,
+                      stage: job.stage ?? null,
+                      renditionPercent: job.renditionPercent ?? 0,
+                      renditionsDone: job.renditionsDone ?? 0,
+                      renditionsTotal: job.renditionsTotal ?? (job.resolutions?.length ?? 0),
+                      startedAt: job.startTime ?? null,
+                  }
+                : null,
+        });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -443,7 +563,13 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         if (result.rows.length === 0) return res.status(404).json({ error: "Content not found" });
         const content = result.rows[0];
         
-        if (content.content_type !== "pdf") return res.status(400).json({ error: "Not a PDF file" });
+        // Anything that is not a video is served here. The curriculum shows a
+        // separate "Documents" section for .docx/.pptx, and those rows call
+        // this same endpoint — an exact content_type === "pdf" test rejected
+        // every one of them with "Not a PDF file".
+        if (content.content_type === "video") {
+            return res.status(400).json({ error: "Use the streaming endpoint for videos." });
+        }
 
         const courseCheck = await pool.query(`
             SELECT c.educator_id, c.id as course_id
@@ -459,8 +585,27 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             const courseIdToCheck = courseId || (courseCheck.rows.length > 0 ? courseCheck.rows[0].course_id : null);
             if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
 
+            /*
+             * Accept an enrolment on the parent course too.
+             *
+             * Courses are nested — a "class" holds "subject" sub-courses — and
+             * students enrol in the parent. This matched only the immediate
+             * course_id, so content inside a subject returned 403 for exactly
+             * the students who had paid for it. authMiddleware already resolves
+             * enrolment this way; the route disagreeing with its own middleware
+             * was the bug.
+             */
             const enrollCheck = await pool.query(
-                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                `SELECT 1
+                   FROM enrollments
+                  WHERE user_id = $1
+                    AND status = 'active'
+                    AND course_id IN (
+                        SELECT $2::uuid
+                        UNION
+                        SELECT parent_course_id FROM courses
+                         WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                    )`,
                 [userId, courseIdToCheck]
             );
 
@@ -476,12 +621,29 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         
         const chunks = [];
         for await (const chunk of r2Response.Body) chunks.push(chunk);
-        
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(content.file_name || content.title + '.pdf')}"`);
-        res.setHeader("Content-Length", Buffer.concat(chunks).length);
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.send(Buffer.concat(chunks));
+        const body = Buffer.concat(chunks);
+
+        // An empty object would otherwise be sent as a 200 with a zero-byte
+        // body, which the viewer renders as a blank frame with no error —
+        // indistinguishable from a broken UI. Fail loudly instead.
+        if (body.length === 0) {
+            return res.status(404).json({ error: "That file is empty or missing from storage." });
+        }
+
+        // Serve the real type. Hardcoding application/pdf meant a .docx was
+        // labelled a PDF, so the browser tried to render it as one and showed
+        // an empty viewer.
+        const contentType =
+            content.mime_type ||
+            (content.content_type === "pdf" ? "application/pdf" : "application/octet-stream");
+
+        res.setHeader("Content-Type", contentType);
+        res.setHeader(
+            "Content-Disposition",
+            `inline; filename="${encodeURIComponent(content.file_name || content.title)}"`
+        );
+        res.setHeader("Content-Length", body.length);
+        res.send(body);
     } catch (err) {
         console.error("PDF fetch error:", err);
         res.status(500).json({ error: "Failed to load PDF" });
@@ -517,8 +679,27 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
             const courseIdToCheck = courseId || (courseCheck.rows.length > 0 ? courseCheck.rows[0].course_id : null);
             if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
 
+            /*
+             * Accept an enrolment on the parent course too.
+             *
+             * Courses are nested — a "class" holds "subject" sub-courses — and
+             * students enrol in the parent. This matched only the immediate
+             * course_id, so content inside a subject returned 403 for exactly
+             * the students who had paid for it. authMiddleware already resolves
+             * enrolment this way; the route disagreeing with its own middleware
+             * was the bug.
+             */
             const enrollCheck = await pool.query(
-                `SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                `SELECT 1
+                   FROM enrollments
+                  WHERE user_id = $1
+                    AND status = 'active'
+                    AND course_id IN (
+                        SELECT $2::uuid
+                        UNION
+                        SELECT parent_course_id FROM courses
+                         WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                    )`,
                 [userId, courseIdToCheck]
             );
 
@@ -655,6 +836,80 @@ router.delete("/:id", authMiddleware, async (req, res) => {
     }
 });
 
+/**
+ * Run async work over a list with a bounded number in flight.
+ *
+ * Segments were uploaded to R2 one at a time, each awaiting the previous. A
+ * 30-minute lecture is ~180 ten-second segments per rendition, so three
+ * renditions meant ~540 sequential round-trips — at a couple of hundred
+ * milliseconds each that is minutes of waiting on a mostly idle connection.
+ *
+ * Concurrency is capped rather than unbounded: firing 540 parallel PUTs would
+ * exhaust sockets and file handles, and R2 would start rejecting them.
+ */
+async function runWithConcurrency(items, limit, worker) {
+    let cursor = 0;
+    let failure = null;
+
+    const runner = async () => {
+        while (cursor < items.length && !failure) {
+            const index = cursor++;
+            try {
+                await worker(items[index]);
+            } catch (err) {
+                if (!failure) failure = err;
+                return;
+            }
+        }
+    };
+
+    await Promise.all(
+        Array.from({ length: Math.min(limit, items.length) }, runner)
+    );
+
+    if (failure) throw failure;
+}
+
+const UPLOAD_CONCURRENCY = 8;
+
+/**
+ * Probe the source so renditions can be chosen from it.
+ *
+ * Returns { height, duration }; height is null when the probe fails, in which
+ * case the caller keeps the full ladder rather than guessing.
+ */
+async function probeVideo(inputPath) {
+    return new Promise((resolve) => {
+        let stdout = "";
+        let probe;
+        try {
+            probe = spawn(FFPROBE_PATH, [
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-show_entries", "format=duration",
+                "-of", "json",
+                inputPath
+            ]);
+        } catch (err) {
+            return resolve({ height: null, duration: null, ok: false });
+        }
+
+        probe.stdout.on("data", (d) => { stdout += d.toString(); });
+        probe.on("error", () => resolve({ height: null, duration: null, ok: false }));
+        probe.on("close", () => {
+            try {
+                const parsed = JSON.parse(stdout);
+                const height = parsed.streams?.[0]?.height ?? null;
+                const duration = Math.round(parseFloat(parsed.format?.duration)) || null;
+                resolve({ height, duration, ok: true });
+            } catch (_) {
+                resolve({ height: null, duration: null, ok: false });
+            }
+        });
+    });
+}
+
 // ============================================
 // TRANSCODE FUNCTION
 // ============================================
@@ -670,30 +925,91 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
     try {
         if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-        let actualDuration = duration;
-        let ffprobeOk = true;
-        await new Promise((resolve) => {
-            let ffprobe;
-            try {
-                ffprobe = spawn(FFPROBE_PATH, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", inputPath]);
-            } catch (spawnErr) {
-                console.error("❌ ffprobe failed to start:", spawnErr.message);
-                ffprobeOk = false;
-                return resolve();
-            }
-            ffprobe.stdout.on("data", d => { actualDuration = Math.round(parseFloat(d.toString())) || actualDuration; });
-            // Without this handler, a missing ffprobe binary crashes the whole process.
-            ffprobe.on("error", (err) => {
-                console.error("❌ ffprobe spawn error — is FFmpeg installed and on PATH?", err.message);
-                ffprobeOk = false;
-                resolve();
-            });
-            ffprobe.on("close", resolve);
-        });
-
-        if (!ffprobeOk) {
+        const probe = await probeVideo(inputPath);
+        if (!probe.ok) {
             throw new Error("FFprobe is not available (not installed or not on PATH). Cannot process video.");
         }
+        const actualDuration = probe.duration || duration;
+
+        /*
+         * Never encode above the source resolution.
+         *
+         * The ladder was applied unconditionally, so a 480p screen recording
+         * was still upscaled to 720p and 1080p. That is roughly three times
+         * the encoding work to produce two files that are larger than the
+         * original and cannot look any better than it — upscaling invents no
+         * detail. This is the main reason processing took so long.
+         *
+         * The 32px tolerance keeps sources like 1072p or 704p on their
+         * intended rung instead of demoting them. If the probe could not read
+         * a height we keep the full ladder rather than guess.
+         */
+        if (probe.height) {
+            const fits = resolutions.filter(
+                (r) => parseInt(r.scale.split(":")[1], 10) <= probe.height + 32
+            );
+            // Always emit at least one rendition, even for tiny sources.
+            resolutions = fits.length > 0 ? fits : [resolutions[0]];
+        }
+
+        console.log(
+            `🎯 source ${probe.height ?? "?"}p → encoding ${resolutions.map(r => r.name).join(", ")}`
+        );
+        activeJobs.set(contentId, {
+            title,
+            startTime: Date.now(),
+            resolutions: resolutions.map(r => r.name),
+            status: "processing"
+        });
+
+        // Renditions finished so far, in ladder order.
+        const completed = [];
+        let isPublished = false;
+        const masterR2Key = `${r2BasePath}/master.m3u8`;
+
+        /**
+         * Write a master playlist covering the renditions done so far and point
+         * the content row at it, marking the video ready on the first call.
+         *
+         * Rewriting the master each time is cheap — it is a few hundred bytes —
+         * and keeps the manifest honest about which renditions actually exist.
+         * Advertising a rung whose segments are not uploaded yet would make the
+         * player stall when it tried to switch up to it.
+         */
+        const publishMaster = async (done) => {
+            let manifest = "#EXTM3U\n#EXT-X-VERSION:3\n";
+            for (const res of done) {
+                const bandwidth =
+                    res.name === "1080p" ? "5000000" : res.name === "720p" ? "2800000" : "1200000";
+                manifest += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${res.scale.replace(":", "x")}\n`;
+                manifest += `${res.name}/index.m3u8\n`;
+            }
+
+            await r2Client.send(new PutObjectCommand({
+                Bucket: R2_BUCKET_NAME,
+                Key: masterR2Key,
+                Body: Buffer.from(manifest, "utf-8"),
+                ContentType: "application/vnd.apple.mpegurl"
+            }));
+
+            await pool.query(`
+                UPDATE content_items
+                SET status = 'ready', r2_key = $1, duration_seconds = $2, metadata = $3, updated_at = NOW()
+                WHERE id = $4::uuid
+            `, [
+                masterR2Key,
+                actualDuration || duration,
+                {
+                    resolutions: done.map(r => r.name),
+                    r2_base_path: r2BasePath,
+                    // Only complete once every planned rung has landed, so the
+                    // UI can tell "watchable" from "finished" if it wants to.
+                    pending: done.length < resolutions.length,
+                    completed_at: new Date().toISOString()
+                },
+                contentId
+            ]);
+        };
 
         for (const { name: resName, scale, bitrate } of resolutions) {
             const qualityDir = path.join(outputDir, resName);
@@ -727,12 +1043,38 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                 }
 
                 ffmpeg.stderr.on("data", (data) => {
-                    const match = data.toString().match(/frame=\s*(\d+)/);
+                    const text = data.toString();
+
+                    const match = text.match(/frame=\s*(\d+)/);
                     if (match) {
                         const currentFrame = parseInt(match[1]);
                         if (currentFrame - lastLoggedFrame >= 500) {
                             console.log(`   🎬 ${resName}: frame ${currentFrame}`);
                             lastLoggedFrame = currentFrame;
+                        }
+                    }
+
+                    /*
+                     * Turn ffmpeg's progress line into a real percentage.
+                     *
+                     * `time=` is how far into the source this pass has reached,
+                     * so dividing by the probed duration gives this rendition's
+                     * share. Frames would need the frame rate to mean anything;
+                     * time needs only the duration we already have.
+                     */
+                    const t = text.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+                    if (t && actualDuration > 0) {
+                        const secs = (+t[1]) * 3600 + (+t[2]) * 60 + parseFloat(t[3]);
+                        const share = Math.min(secs / actualDuration, 1);
+                        const overall = (completed.length + share) / resolutions.length;
+
+                        const job = activeJobs.get(contentId);
+                        if (job) {
+                            job.stage = resName;
+                            job.percent = Math.round(overall * 100);
+                            job.renditionPercent = Math.round(share * 100);
+                            job.renditionsDone = completed.length;
+                            job.renditionsTotal = resolutions.length;
                         }
                     }
                 });
@@ -757,16 +1099,21 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
             const allFiles = fs.readdirSync(qualityDir).sort();
             const segments = allFiles.filter(f => f.endsWith(".ts"));
 
-            for (const seg of segments) {
+            await runWithConcurrency(segments, UPLOAD_CONCURRENCY, async (seg) => {
                 const filePath = path.join(qualityDir, seg);
                 await r2Client.send(new PutObjectCommand({
                     Bucket: R2_BUCKET_NAME,
                     Key: `${r2BasePath}/${resName}/${seg}`,
                     Body: fs.createReadStream(filePath),
+                    // Given explicitly so the SDK can send a plain sized PUT.
+                    // Without it a stream body is uploaded chunked, which is
+                    // slower and which some S3-compatible endpoints reject.
+                    ContentLength: fs.statSync(filePath).size,
                     ContentType: "video/mp2t"
                 }));
                 fs.unlinkSync(filePath);
-            }
+            });
+            console.log(`   ☁️  uploaded ${segments.length} ${resName} segments`);
 
             if (fs.existsSync(playlistPath)) {
                 await r2Client.send(new PutObjectCommand({
@@ -776,36 +1123,29 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
                     ContentType: "application/vnd.apple.mpegurl"
                 }));
             }
+
+            /*
+             * Publish after each rendition instead of only at the very end.
+             *
+             * The row stayed 'processing' — hidden from students, labelled
+             * "Processing" for the educator — until every rung had finished.
+             * With three renditions at roughly 3-4x realtime each, a 30 minute
+             * lecture sat unwatchable for the better part of half an hour even
+             * though the lowest quality was ready after the first third.
+             *
+             * The ladder runs lowest-first, so the first pass through here
+             * publishes a playable 480p and flips the row to 'ready'. Each
+             * later rung rewrites the master to add itself. A viewer who loads
+             * mid-way simply sees fewer quality options.
+             */
+            completed.push({ name: resName, scale });
+            await publishMaster(completed);
+
+            if (!isPublished) {
+                isPublished = true;
+                console.log(`   ✅ ${resName} live — remaining renditions continue in background`);
+            }
         }
-
-        let masterManifest = "#EXTM3U\n#EXT-X-VERSION:3\n";
-        for (const res of resolutions) {
-            const bandwidth = res.name === "1080p" ? "5000000" : res.name === "720p" ? "2800000" : "1200000";
-            const resAttr = res.scale.replace(":", "x");
-            masterManifest += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resAttr}\n`;
-            masterManifest += `${res.name}/index.m3u8\n`;
-        }
-
-        const masterR2Key = `${r2BasePath}/master.m3u8`;
-        await r2Client.send(new PutObjectCommand({
-            Bucket: R2_BUCKET_NAME,
-            Key: masterR2Key,
-            Body: Buffer.from(masterManifest, "utf-8"),
-            ContentType: "application/vnd.apple.mpegurl"
-        }));
-
-        const resolutionNames = resolutions.map(r => r.name);
-        const metadataObj = {
-            resolutions: resolutionNames,
-            r2_base_path: r2BasePath,
-            completed_at: new Date().toISOString()
-        };
-
-        await pool.query(`
-            UPDATE content_items
-            SET status = 'ready', r2_key = $1, duration_seconds = $2, metadata = $3, updated_at = NOW()
-            WHERE id = $4::uuid
-        `, [masterR2Key, actualDuration || duration, metadataObj, contentId]);
 
         activeJobs.delete(contentId);
         
@@ -816,11 +1156,38 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         console.error(`❌ Transcoding failed:`, err.message);
         activeJobs.delete(contentId);
 
-        await pool.query(`
-            UPDATE content_items
-            SET status = 'failed', metadata = $1, updated_at = NOW()
-            WHERE id = $2::uuid
-        `, [{ error: err.message, failed_at: new Date().toISOString() }, contentId]);
+        /*
+         * Only fail the row if nothing was published.
+         *
+         * Now that each rendition goes live as it finishes, a video can be
+         * perfectly watchable at 480p when the 1080p pass dies. Marking it
+         * 'failed' there would hide a working video from students and tell the
+         * educator to re-upload something that is already fine — so a partial
+         * failure leaves the row 'ready' and just records what went wrong.
+         */
+        const published = await pool.query(
+            `SELECT status FROM content_items WHERE id = $1::uuid`,
+            [contentId]
+        );
+        const alreadyLive = published.rows[0]?.status === 'ready';
+
+        if (alreadyLive) {
+            console.warn(`⚠️  Keeping ${contentId} live — some renditions completed before the failure.`);
+            await pool.query(`
+                UPDATE content_items
+                SET metadata = metadata || $1::jsonb, updated_at = NOW()
+                WHERE id = $2::uuid
+            `, [JSON.stringify({
+                partial_error: err.message,
+                failed_at: new Date().toISOString()
+            }), contentId]);
+        } else {
+            await pool.query(`
+                UPDATE content_items
+                SET status = 'failed', metadata = $1, updated_at = NOW()
+                WHERE id = $2::uuid
+            `, [{ error: err.message, failed_at: new Date().toISOString() }, contentId]);
+        }
 
         if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
         const od = path.join(TEMP_VIDEO_DIR, `hls_${contentId}`);

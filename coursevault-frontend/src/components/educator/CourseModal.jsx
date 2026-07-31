@@ -121,7 +121,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
           </button>
         </div>
         
-        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-4 bg-white rounded-b-xl overflow-y-auto">
+        <form onSubmit={handleSubmit} className="flex-1 min-h-0 p-4 md:p-6 flex flex-col gap-4 bg-white rounded-b-xl overflow-y-auto">
           <div>
             <label className="font-bold text-sm ml-1 mb-1 block">Course Title</label>
             <input required value={title} onChange={e => setTitle(e.target.value)} className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]" />

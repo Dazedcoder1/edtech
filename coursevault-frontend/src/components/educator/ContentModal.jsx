@@ -153,7 +153,7 @@ export default function ContentModal({ isOpen, onClose, moduleId, folderId, onSa
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 md:p-6 flex flex-col gap-4 overflow-y-auto">
+        <form onSubmit={handleSubmit} className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6 flex flex-col gap-4">
 
           {error && (
             <div className="flex items-start gap-2 border-2 border-red-400 bg-red-50 text-red-800 rounded-xl px-3 py-2 text-sm font-bold">

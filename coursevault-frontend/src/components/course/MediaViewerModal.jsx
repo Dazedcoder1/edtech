@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Loader } from 'lucide-react';
+import { X, Loader, FileDown } from 'lucide-react';
 import { fetchAPI } from '../../services/api.js';
 import Hls from 'hls.js';
 
@@ -7,6 +7,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
   const [pdfUrl, setPdfUrl] = useState(null);
+  const [downloadUrl, setDownloadUrl] = useState(null);
   const [error, setError] = useState(null);
   const [savedPosition, setSavedPosition] = useState(0);
   
@@ -25,6 +26,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
     setLoading(true);
     setStreamUrl(null);
     setPdfUrl(null);
+    setDownloadUrl(null);
     setError(null);
 
     const initMedia = async () => {
@@ -75,11 +77,28 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           const rawBlob = await response.blob();
           if (isCancelled) return;
 
-          const pdfBlob = new Blob([rawBlob], { type: 'application/pdf' });
-          const objectUrl = URL.createObjectURL(pdfBlob);
-          
-          setPdfUrl(`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0`);
-          setLoading(false); 
+          // A zero-byte body used to become a valid blob URL and render as an
+          // empty frame — a blank grey box with no error, which reads as a
+          // broken viewer rather than a missing file.
+          if (rawBlob.size === 0) {
+            throw new Error('That file came back empty. It may not have finished uploading.');
+          }
+
+          // Trust the server's type instead of forcing application/pdf. A
+          // .docx relabelled as a PDF makes the browser open its PDF viewer on
+          // bytes that are not a PDF, which draws nothing at all.
+          const serverType = (response.headers.get('content-type') || '').split(';')[0].trim();
+          const blobType = serverType || rawBlob.type || 'application/octet-stream';
+          const objectUrl = URL.createObjectURL(new Blob([rawBlob], { type: blobType }));
+
+          if (blobType === 'application/pdf') {
+            setPdfUrl(`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0`);
+          } else {
+            // Browsers cannot render Word/PowerPoint inline. Offer the file
+            // rather than showing an empty viewer.
+            setDownloadUrl(objectUrl);
+          }
+          setLoading(false);
           
         } else {
           throw new Error(`Unknown content type configuration: "${rawContentType}"`);
@@ -174,12 +193,10 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
 
   useEffect(() => {
     return () => {
-      if (pdfUrl) {
-        const rawBlobUrl = pdfUrl.split('#')[0];
-        URL.revokeObjectURL(rawBlobUrl);
-      }
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl.split('#')[0]);
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     };
-  }, [pdfUrl]);
+  }, [pdfUrl, downloadUrl]);
 
   if (!content || !content.id) return null;
   
@@ -226,6 +243,22 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
             />
           )}
           
+          {!loading && !error && downloadUrl && (
+            <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
+              <FileDown size={40} strokeWidth={2} className="text-[#F26B4D]" />
+              <p className="font-bold text-sm md:text-base">
+                This file type can't be previewed in the browser.
+              </p>
+              <a
+                href={downloadUrl}
+                download={content.file_name || content.title}
+                className="inline-flex items-center gap-2 px-5 h-11 font-bold text-sm border-2 border-black rounded-xl bg-[#F9E076] shadow-[3px_3px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[1px_1px_0px_0px_#111] transition-all"
+              >
+                <FileDown size={16} strokeWidth={2.5} /> Download to open
+              </a>
+            </div>
+          )}
+
           {!loading && !error && isPdf && pdfUrl && (
             <iframe
               src={pdfUrl}

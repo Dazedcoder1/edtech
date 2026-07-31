@@ -200,7 +200,11 @@ router.get("/:id", async (req, res) => {
                         status,
                         r2_key,
                         created_at,
-                        folder_id
+                        folder_id,
+                        -- Carries { pending: true } while later renditions are
+                        -- still encoding, so the row can keep showing progress
+                        -- after the video becomes watchable.
+                        metadata
                     FROM content_items
                     WHERE id = ANY($1::uuid[])
                     AND is_active = true
@@ -248,9 +252,30 @@ router.post("/", authMiddleware, async (req, res) => {
         try {
             await client.query("BEGIN");
 
+            /*
+             * display_order is assigned here rather than left NULL.
+             *
+             * The dashboard sorts on display_order and treats NULL as 0, so an
+             * unassigned course tied with every other unarranged one and fell
+             * through to the alphabetical tiebreak — which is why a new course
+             * appeared partway up the list instead of at the bottom.
+             *
+             * MAX + 1 within its own sibling group puts it last. IS NOT
+             * DISTINCT FROM (not `=`) is required so top-level courses, where
+             * parent_course_id is NULL, group together at all: `NULL = NULL`
+             * is NULL in SQL, so `=` would match no rows and every top-level
+             * course would restart at 1.
+             */
             const courseResult = await client.query(`
-    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id)
-    VALUES ($1, $2, $3, $4, $5, $6, true, $7) RETURNING *
+    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, display_order)
+    SELECT $1, $2, $3, $4, $5, $6, true, $7,
+           COALESCE((
+               SELECT MAX(display_order) FROM courses
+               WHERE educator_id = $1
+                 AND is_active = true
+                 AND parent_course_id IS NOT DISTINCT FROM $7
+           ), 0) + 1
+    RETURNING *
 `, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null]);
             const course = courseResult.rows[0];
 
