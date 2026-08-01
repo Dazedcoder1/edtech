@@ -219,8 +219,22 @@ router.get("/courses/:courseId/enrollments", authMiddleware, async (req, res) =>
             });
         }
 
+        /*
+         * progress is computed, not stored.
+         *
+         * This query used to select e.progress and e.last_accessed. Neither
+         * column exists on enrollments, so the endpoint threw
+         * "column e.progress does not exist" on every call and the modal
+         * showed "Could not load the student list" — the educator could never
+         * see who had enrolled.
+         *
+         * Adding the columns would have silenced the error while reporting 0%
+         * for everyone, because nothing in the codebase maintains them. The
+         * student-facing list already derives progress from actual completion,
+         * so this uses the same definition and the two views agree.
+         */
         const result = await pool.query(`
-            SELECT 
+            SELECT
                 e.id as enrollment_id,
                 e.user_id,
                 e.status as enrollment_status,
@@ -228,36 +242,82 @@ router.get("/courses/:courseId/enrollments", authMiddleware, async (req, res) =>
                 e.payment_id,
                 e.amount_paid,
                 e.enrolled_at,
-                e.progress,
-                e.last_accessed,
+                e.expires_at,
                 u.name as student_name,
                 u.email as student_email,
-                u.created_at as member_since
+                u.created_at as member_since,
+                (
+                    (
+                        SELECT COUNT(DISTINCT vp.content_id)
+                        FROM video_progress vp
+                        JOIN content_items ci ON ci.id = vp.content_id
+                        JOIN modules m ON ci.id = ANY(m.content_ids)
+                        WHERE vp.user_id = e.user_id
+                          AND vp.is_completed = true
+                          AND m.course_id = $1
+                          AND m.is_active = true
+                          AND ci.is_active = true
+                          AND ci.status = 'ready'
+                    )
+                    +
+                    (
+                        SELECT COUNT(DISTINCT qa.quiz_id)
+                        FROM quiz_attempts qa
+                        JOIN quizzes q ON q.id = qa.quiz_id
+                        JOIN modules m ON m.id = q.module_id
+                        WHERE m.course_id = $1
+                          AND m.is_active = true
+                          AND qa.user_id = e.user_id
+                          AND qa.status = 'completed'
+                    )
+                )::int AS completed_items,
+                (
+                    (
+                        SELECT COUNT(DISTINCT ci.id)
+                        FROM content_items ci
+                        JOIN modules m ON ci.id = ANY(m.content_ids)
+                        WHERE m.course_id = $1
+                          AND m.is_active = true
+                          AND ci.is_active = true
+                          AND ci.status = 'ready'
+                    )
+                    +
+                    (
+                        SELECT COUNT(*)
+                        FROM quizzes q
+                        JOIN modules m ON m.id = q.module_id
+                        WHERE m.course_id = $1
+                          AND m.is_active = true
+                    )
+                )::int AS total_items
             FROM enrollments e
             JOIN users u ON e.user_id = u.id
             WHERE e.course_id = $1 AND e.status = 'active'
             ORDER BY e.enrolled_at DESC
         `, [courseId]);
 
-        const stats = await pool.query(`
-            SELECT 
-                COUNT(*) as total_enrolled,
-                COALESCE(AVG(progress), 0) as avg_progress,
-                COUNT(CASE WHEN progress = 100 THEN 1 END) as completed_count
-            FROM enrollments
-            WHERE course_id = $1 AND status = 'active'
-        `, [courseId]);
+        const students = result.rows.map((row) => {
+            const completed = Number(row.completed_items) || 0;
+            const total = Number(row.total_items) || 0;
+            return { ...row, progress: total > 0 ? Math.round((completed / total) * 100) : 0 };
+        });
+
+        // Derived from the same rows, so the summary cannot disagree with the
+        // list beneath it.
+        const avgProgress = students.length
+            ? Math.round(students.reduce((sum, s) => sum + s.progress, 0) / students.length)
+            : 0;
 
         res.json({
             success: true,
             courseId: courseId,
             statistics: {
-                total_enrolled: parseInt(stats.rows[0].total_enrolled),
-                avg_progress: Math.round(stats.rows[0].avg_progress),
-                completed_count: parseInt(stats.rows[0].completed_count)
+                total_enrolled: students.length,
+                avg_progress: avgProgress,
+                completed_count: students.filter((s) => s.progress >= 100).length
             },
-            count: result.rows.length,
-            students: result.rows
+            count: students.length,
+            students
         });
 
     } catch (err) {

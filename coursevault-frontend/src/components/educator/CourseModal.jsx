@@ -10,6 +10,8 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const [status, setStatus] = useState('draft');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
   const [validityMonths, setValidityMonths] = useState(''); // blank = lifetime
+  // 'months' for real courses, 'minutes' purely to verify the lockout works.
+  const [validityUnit, setValidityUnit] = useState('months');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
@@ -20,7 +22,15 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setPrice(course.price || 0);
       setStatus(course.status || 'draft');
       setThumbnailUrl(course.thumbnail_url || '');
-      setValidityMonths(course.access_duration_months ?? '');
+      // A course saved in test minutes reopens in test minutes, rather than
+      // silently showing a blank month field that would wipe it on save.
+      if (course.access_duration_minutes) {
+        setValidityUnit('minutes');
+        setValidityMonths(course.access_duration_minutes);
+      } else {
+        setValidityUnit('months');
+        setValidityMonths(course.access_duration_months ?? '');
+      }
     } else {
       setTitle('');
       setDescription('');
@@ -28,6 +38,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setStatus('draft');
       setThumbnailUrl('');
       setValidityMonths('');
+      setValidityUnit('months');
     }
   }, [course, isOpen]);
 
@@ -88,11 +99,18 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
     e.preventDefault();
     setIsSubmitting(true);
     const trimmedValidity = String(validityMonths).trim();
+    const usingMinutes = validityUnit === 'minutes';
+    const maxValue = usingMinutes ? 1440 : 120;
+
     if (trimmedValidity !== '') {
-      const months = Number(trimmedValidity);
-      if (!Number.isInteger(months) || months < 1 || months > 120) {
+      const value = Number(trimmedValidity);
+      if (!Number.isInteger(value) || value < 1 || value > maxValue) {
         setIsSubmitting(false);
-        return alert('Validity must be a whole number of months between 1 and 120, or left blank for lifetime access.');
+        return alert(
+          usingMinutes
+            ? 'Test duration must be a whole number of minutes between 1 and 1440 (24 hours).'
+            : 'Validity must be a whole number of months between 1 and 120, or left blank for lifetime access.'
+        );
       }
     }
 
@@ -102,8 +120,13 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       price: parseFloat(price), 
       status,
       thumbnail_url: thumbnailUrl,
-      // Blank means lifetime; the server stores null.
-      access_duration_months: trimmedValidity === '' ? null : Number(trimmedValidity),
+      // Blank means lifetime; the server stores null. Only one of the two is
+      // ever set — minutes wins server-side, so sending both would be
+      // ambiguous about which the teacher actually chose.
+      access_duration_months:
+        trimmedValidity === '' || usingMinutes ? null : Number(trimmedValidity),
+      access_duration_minutes:
+        trimmedValidity === '' || !usingMinutes ? null : Number(trimmedValidity),
     };
 
     if (!course && parentCourseId) {
@@ -220,15 +243,28 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
               <input
                 type="number"
                 min="1"
-                max="120"
+                max={validityUnit === 'minutes' ? 1440 : 120}
                 step="1"
                 value={validityMonths}
                 onChange={e => setValidityMonths(e.target.value)}
                 placeholder="Lifetime"
-                className="w-32 bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
+                className="w-28 bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
               />
-              <span className="font-bold text-sm text-gray-600">months</span>
+              <select
+                value={validityUnit}
+                onChange={e => setValidityUnit(e.target.value)}
+                className="bg-[#F4F4F4] border-2 border-black rounded-xl px-3 py-2 font-bold text-sm focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
+              >
+                <option value="months">months</option>
+                <option value="minutes">minutes (testing)</option>
+              </select>
             </div>
+            {validityUnit === 'minutes' && (
+              <p className="text-xs font-bold text-amber-800 bg-amber-50 border-2 border-amber-400 rounded-lg px-2 py-1.5 mt-2">
+                Testing mode — access really will expire this fast. Switch back
+                to months before students buy this course.
+              </p>
+            )}
             <p className="text-xs text-gray-500 font-medium mt-1">
               How long a student keeps access after buying. Leave blank for
               lifetime access.

@@ -6,6 +6,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
 import authMiddleware from "../middleware/auth.js";
+import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import { generateFileHash, getFileExtension, getMimeType } from "../utils/helpers.js";
 
 const router = express.Router();
@@ -99,7 +100,7 @@ router.get("/:id", authMiddleware, async (req, res) => {
         const test = result.rows[0];
         const isCreator = test.course_educator === req.user.id;
         const isEnrolled = await pool.query(
-            `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+            `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}`,
             [req.user.id, test.course_id]
         );
 

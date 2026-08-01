@@ -260,7 +260,52 @@ async function setupDatabase() {
         // Timed access. NULL on both means unlimited, so every existing course
         // and every enrolment already sold keeps working untouched.
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS access_duration_months INT DEFAULT NULL`);
-        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP DEFAULT NULL`);
+        /*
+         * TIMESTAMPTZ, not TIMESTAMP.
+         *
+         * A bare TIMESTAMP stores a wall-clock reading with no zone attached.
+         * Postgres then evaluates `expires_at > NOW()` using the database
+         * session's zone, while the browser reads the serialised value as an
+         * instant in its own — so the server could report "access until today"
+         * for a row the student's browser had already shown as expired. The
+         * two disagreed by exactly the offset between them.
+         *
+         * An expiry is a moment in time, not a wall-clock reading, so it needs
+         * a type that says which moment.
+         */
+        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ DEFAULT NULL`);
+
+        /*
+         * Convert installs created before the type was corrected.
+         *
+         * The old values must be interpreted in the NODE process's zone, not
+         * the database's. node-postgres serialises a JS Date to a local
+         * wall-clock string, and a naive TIMESTAMP column keeps exactly that —
+         * so the reading was recorded in the app server's zone. Converting
+         * with the database's zone instead shifts every row by the offset
+         * between them, which on an IST app server against a UTC database
+         * pushed every expiry 5.5 hours into the future and stopped anything
+         * expiring at all.
+         */
+        const nodeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'enrollments'
+                      AND column_name = 'expires_at'
+                      AND data_type = 'timestamp without time zone'
+                ) THEN
+                    ALTER TABLE enrollments
+                        ALTER COLUMN expires_at TYPE TIMESTAMPTZ
+                        USING expires_at AT TIME ZONE ${JSON.stringify(nodeZone).replace(/"/g, "'")};
+                END IF;
+            END $$;
+        `);
+        // Short-duration override, so the expiry behaviour can be verified
+        // without waiting a calendar month. Takes precedence over months.
+        await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS access_duration_minutes INT DEFAULT NULL`);
         // Every access check filters on it, and it is the column that decides
         // whether a student can open a paid course.
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_enrollments_expires_at ON enrollments(expires_at)`);

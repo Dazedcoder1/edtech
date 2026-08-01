@@ -29,8 +29,18 @@ export function activeEnrolmentSql(alias = 'e') {
  * from the course's current setting on every read. If a teacher later changes
  * the course from 6 months to 3, that must not retroactively cut short access
  * somebody has already paid for.
+ *
+ * `minutes` exists so the expiry can actually be tested — waiting a month to
+ * find out whether the lockout works is not a test. When set it wins, and
+ * months are ignored. It is a real duration, not a debug flag: a course left
+ * on minutes by accident will genuinely expire that fast.
  */
-export function expiryFromMonths(months) {
+export function expiryFrom({ months, minutes } = {}) {
+    const mins = Number(minutes);
+    if (Number.isInteger(mins) && mins >= 1) {
+        return new Date(Date.now() + mins * 60 * 1000);
+    }
+
     const parsed = Number(months);
     if (!Number.isInteger(parsed) || parsed < 1) return null;
 
@@ -45,6 +55,27 @@ export function expiryFromMonths(months) {
         expires.setDate(0);
     }
     return expires;
+}
+
+/** Kept so existing callers passing a bare month count still work. */
+export function expiryFromMonths(months) {
+    return expiryFrom({ months });
+}
+
+/** Minutes of validity for the testing path, or null. */
+export function parseDurationMinutes(value) {
+    if (value === undefined || value === null || value === '') return { ok: true, minutes: null };
+
+    const minutes = Number(value);
+    // Capped at a day — this is for verifying the lockout, and anything longer
+    // should be expressed in months where the calendar maths is correct.
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+        return {
+            ok: false,
+            error: 'Test duration must be a whole number of minutes between 1 and 1440 (24 hours).',
+        };
+    }
+    return { ok: true, minutes };
 }
 
 /** Whole months of validity, or null for lifetime. Throws nothing; validates. */

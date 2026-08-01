@@ -1,7 +1,7 @@
 ﻿import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
-import { activeEnrolmentSql, parseDurationMonths } from "../utils/enrollmentAccess.js";
+import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
 
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../config/jwt.js";
@@ -70,8 +70,11 @@ router.get("/my-courses", authMiddleware, async (req, res) => {
                     c.*,
                     u.name as educator_name,
                     e.enrolled_at,
-                    e.progress,
-                    e.last_accessed,
+                    e.expires_at,
+                    -- e.progress / e.last_accessed removed: neither column
+                    -- exists, so this endpoint threw on every call. Progress
+                    -- is derived in GET /api/enrollments, which is what the
+                    -- UI actually reads.
                     e.status as enrollment_status
                 FROM enrollments e
                 JOIN courses c ON e.course_id = c.id
@@ -157,8 +160,24 @@ router.get("/:id", async (req, res) => {
                 const token = authHeader.split(" ")[1];
                 const decoded = jwt.verify(token, JWT_SECRET);
 
+                /*
+                 * Accept the parent class's enrolment, matching every access
+                 * gate. Students buy a class and study its subjects, so
+                 * checking only this course id reported isEnrolled = false on
+                 * every subject page — the UI offered "Enroll" to students who
+                 * already had access, and after renewing, the page still
+                 * looked unpurchased even though the content had unlocked.
+                 */
                 const enrollmentCheck = await pool.query(
-                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}`,
+                    `SELECT id FROM enrollments
+                      WHERE user_id = $1
+                        AND ${activeEnrolmentSql('')}
+                        AND course_id IN (
+                            SELECT $2::uuid
+                            UNION
+                            SELECT parent_course_id FROM courses
+                             WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                        )`,
                     [decoded.id, id]
                 );
                 isEnrolled = enrollmentCheck.rows.length > 0;
@@ -247,10 +266,12 @@ router.post("/", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only educators can create courses" });
         }
 
-        const { title, description, price, status, parent_course_id, thumbnail_url, access_duration_months } = req.body;
+        const { title, description, price, status, parent_course_id, thumbnail_url, access_duration_months, access_duration_minutes } = req.body;
 
         const duration = parseDurationMonths(access_duration_months);
         if (!duration.ok) return res.status(400).json({ error: duration.error });
+        const testDuration = parseDurationMinutes(access_duration_minutes);
+        if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
 
         const client = await pool.connect();
 
@@ -272,8 +293,8 @@ router.post("/", authMiddleware, async (req, res) => {
              * course would restart at 1.
              */
             const courseResult = await client.query(`
-    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, access_duration_months, display_order)
-    SELECT $1, $2, $3, $4, $5, $6, true, $7, $8,
+    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, access_duration_months, access_duration_minutes, display_order)
+    SELECT $1, $2, $3, $4, $5, $6, true, $7, $8, $9,
            COALESCE((
                SELECT MAX(display_order) FROM courses
                WHERE educator_id = $1
@@ -281,7 +302,7 @@ router.post("/", authMiddleware, async (req, res) => {
                  AND parent_course_id IS NOT DISTINCT FROM $7
            ), 0) + 1
     RETURNING *
-`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null, duration.months]);
+`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null, duration.months, testDuration.minutes]);
             const course = courseResult.rows[0];
 
             const moduleResult = await client.query(`
@@ -357,10 +378,12 @@ router.put("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only course creator can update courses" });
         }
 
-        const { title, description, price, status, thumbnail_url, access_duration_months } = req.body;
+        const { title, description, price, status, thumbnail_url, access_duration_months, access_duration_minutes } = req.body;
 
         const duration = parseDurationMonths(access_duration_months);
         if (!duration.ok) return res.status(400).json({ error: duration.error });
+        const testDuration = parseDurationMinutes(access_duration_minutes);
+        if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
 
         const result = await pool.query(`
     UPDATE courses
@@ -374,10 +397,11 @@ router.put("/:id", authMiddleware, async (req, res) => {
         -- Only applies to future purchases; enrolments already sold keep the
         -- expires_at stamped when they were bought.
         access_duration_months = $6,
+        access_duration_minutes = $7,
         updated_at = NOW()
-    WHERE id = $7
+    WHERE id = $8
     RETURNING *
-`, [title, description, price, status, thumbnail_url, duration.months, id]);
+`, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, id]);
         res.json({ success: true, course: result.rows[0] });
     } catch (err) {
         res.status(500).json({ error: err.message });

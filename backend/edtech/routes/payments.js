@@ -2,7 +2,7 @@ import express from "express";
 import crypto from "crypto";
 import Razorpay from "razorpay";
 import pool from "../config/database.js";
-import { expiryFromMonths } from "../utils/enrollmentAccess.js";
+import { expiryFrom, activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
@@ -22,17 +22,35 @@ router.post("/create-order", authMiddleware, async (req, res) => {
     try {
         await client.query('BEGIN');
         
+        /*
+         * "Already enrolled" must mean *currently* enrolled.
+         *
+         * This checked status alone, so a student whose access had expired was
+         * still refused with "Already enrolled in this course" — locked out of
+         * the content and locked out of buying it again, with no way forward.
+         * Reusing the same predicate as the access gates keeps the two answers
+         * consistent: if it will not let you in, it must let you re-purchase.
+         */
         const existingEnrollment = await client.query(`
-            SELECT status FROM enrollments 
-            WHERE user_id = $1 AND course_id = $2 AND status = 'active'
+            SELECT status, expires_at FROM enrollments
+            WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}
         `, [userId, courseId]);
-        
+
         if (existingEnrollment.rows.length > 0) {
-            return res.status(400).json({ error: "Already enrolled in this course" });
+            // Deliberately specific. The old wording was a flat "Already
+            // enrolled in this course", which was indistinguishable from a
+            // stale server still running the pre-expiry check — and said
+            // nothing about the access the student supposedly still has.
+            const { expires_at: existingExpiry } = existingEnrollment.rows[0];
+            return res.status(400).json({
+                error: existingExpiry
+                    ? `You already have access to this course until ${new Date(existingExpiry).toLocaleDateString()}.`
+                    : "You already have lifetime access to this course.",
+            });
         }
         
         const course = await client.query(`
-            SELECT price, title, access_duration_months FROM courses WHERE id = $1
+            SELECT price, title, access_duration_months, access_duration_minutes FROM courses WHERE id = $1
         `, [courseId]);
         
         if (course.rows.length === 0) {
@@ -51,7 +69,10 @@ router.post("/create-order", authMiddleware, async (req, res) => {
              * Re-enrolling after a lapse runs through the same ON CONFLICT
              * branch, so a renewal restarts the clock from today.
              */
-            const expiresAt = expiryFromMonths(courseData.access_duration_months);
+            const expiresAt = expiryFrom({
+                months: courseData.access_duration_months,
+                minutes: courseData.access_duration_minutes,
+            });
 
             await client.query(`
                 INSERT INTO enrollments (user_id, course_id, payment_status, status, enrolled_at, amount_paid, expires_at)
@@ -103,11 +124,25 @@ router.post("/create-order", authMiddleware, async (req, res) => {
             `, [orderId, userId, courseId, courseData.price]);
         }
         
+        /*
+         * Record that a payment is in flight — without touching `status`.
+         *
+         * This used to force status = 'pending' on conflict, which meant
+         * merely *starting* a checkout revoked access the student already had.
+         * A student with three valid months who clicked Renew early, then
+         * closed the Razorpay window, was left with no access and no payment:
+         * their enrolment had been downgraded for a purchase that never
+         * happened.
+         *
+         * Leaving status alone is safe because it is /verify that grants
+         * access, and it sets both status and a fresh expires_at. An enrolment
+         * that has genuinely lapsed stays lapsed until payment completes.
+         */
         await client.query(`
             INSERT INTO enrollments (user_id, course_id, payment_status, status)
             VALUES ($1, $2, 'pending', 'pending')
-            ON CONFLICT (user_id, course_id) 
-            DO UPDATE SET payment_status = 'pending', status = 'pending', updated_at = NOW()
+            ON CONFLICT (user_id, course_id)
+            DO UPDATE SET payment_status = 'pending', updated_at = NOW()
         `, [userId, courseId]);
         
         await client.query('COMMIT');
@@ -187,10 +222,13 @@ router.post("/verify", authMiddleware, async (req, res) => {
         // Same rule as the free path: the clock starts when the payment
         // completes, not when the order was created.
         const durationResult = await client.query(
-            `SELECT access_duration_months FROM courses WHERE id = $1`,
+            `SELECT access_duration_months, access_duration_minutes FROM courses WHERE id = $1`,
             [courseId]
         );
-        const paidExpiresAt = expiryFromMonths(durationResult.rows[0]?.access_duration_months);
+        const paidExpiresAt = expiryFrom({
+            months: durationResult.rows[0]?.access_duration_months,
+            minutes: durationResult.rows[0]?.access_duration_minutes,
+        });
 
         await client.query(`
             UPDATE enrollments 
