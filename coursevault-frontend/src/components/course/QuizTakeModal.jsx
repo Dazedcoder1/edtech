@@ -40,11 +40,28 @@ export default function QuizTakeModal({ quizId, onClose }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scorecard, setScorecard] = useState(null);
   const [showReview, setShowReview] = useState(false);
+  const [timedOut, setTimedOut] = useState(false);
 
   // 🌟 Real open -> submit timer. Set the instant the quiz's questions
   // are actually on screen (not when the request merely fires), so the
   // measured time matches what the student experiences.
   const startTimeRef = useRef(null);
+
+  // Seconds remaining, or null when the quiz is untimed.
+  const [secondsLeft, setSecondsLeft] = useState(null);
+
+  /*
+   * The auto-submit fires from inside an interval, which closes over the
+   * render that created it. Reading answers from a ref rather than state is
+   * what stops a timeout from submitting whatever had been answered when the
+   * timer started instead of the student's latest choices.
+   */
+  const answersRef = useRef({});
+  useEffect(() => { answersRef.current = answers; }, [answers]);
+
+  // Guards against a double submit when the deadline lands while the student
+  // is already pressing the button.
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     if (quizId) {
@@ -60,6 +77,7 @@ export default function QuizTakeModal({ quizId, onClose }) {
       setQuestions(data.questions || []);
       setAnswers({});
       setScorecard(null);
+      setTimedOut(false);
       startTimeRef.current = Date.now();
     } catch (err) {
       alert(err.message || "Failed to load quiz");
@@ -76,10 +94,12 @@ export default function QuizTakeModal({ quizId, onClose }) {
     }));
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (Object.keys(answers).length < questions.length) {
+  const submitQuiz = async ({ auto = false } = {}) => {
+    if (submittingRef.current || scorecard) return;
+
+    // An automatic submit must never stop to ask — there is no one to answer
+    // it, and the time is already up.
+    if (!auto && Object.keys(answersRef.current).length < questions.length) {
       if (!window.confirm("You haven't answered all questions. Submit anyway?")) {
         return;
       }
@@ -90,20 +110,55 @@ export default function QuizTakeModal({ quizId, onClose }) {
       ? Math.max(0, Math.round((Date.now() - startTimeRef.current) / 1000))
       : undefined;
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     try {
       const result = await fetchAPI(`/quiz/${quizId}/submit`, {
         method: 'POST',
-        body: JSON.stringify({ answers, clientTimeTakenSeconds })
+        body: JSON.stringify({ answers: answersRef.current, clientTimeTakenSeconds })
       });
-      
+
       setScorecard(result);
+      if (auto) setTimedOut(true);
     } catch (err) {
       alert(err.message || "Failed to submit quiz");
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    submitQuiz();
+  };
+
+  /*
+   * Countdown.
+   *
+   * The deadline is computed once from the start time rather than by
+   * decrementing a counter, so a background tab or a slow frame cannot make
+   * the clock drift away from real elapsed time.
+   */
+  useEffect(() => {
+    const limitMinutes = quiz?.time_limit;
+    if (!limitMinutes || !startTimeRef.current || scorecard) {
+      setSecondsLeft(null);
+      return;
+    }
+
+    const deadline = startTimeRef.current + limitMinutes * 60 * 1000;
+
+    const tick = () => {
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      setSecondsLeft(left);
+      if (left <= 0) submitQuiz({ auto: true });
+    };
+
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [quiz, scorecard, questions.length]);
 
   if (!quizId) return null;
 
@@ -121,13 +176,43 @@ export default function QuizTakeModal({ quizId, onClose }) {
               </div>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="flex-shrink-0 w-8 h-8 md:w-10 md:h-10 border-2 md:border-[3px] border-black bg-white rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#111]"
-          >
-            <X size={16} strokeWidth={3} className="md:w-5 md:h-5" />
-          </button>
+          <div className="flex items-center gap-2 md:gap-3 shrink-0">
+            {/*
+              Only while the quiz is live — once the scorecard is up the clock
+              is meaningless, and showing 00:00 next to a result reads as a
+              failure. Goes red under a minute so the warning is peripheral
+              rather than something you have to be reading to notice.
+            */}
+            {secondsLeft !== null && !scorecard && (
+              <div
+                role="timer"
+                aria-live={secondsLeft <= 60 ? 'assertive' : 'off'}
+                className={`flex items-center gap-1.5 px-2.5 md:px-3 h-8 md:h-10 rounded-full border-2 border-black font-black tabular-nums text-sm md:text-base shadow-[2px_2px_0px_0px_#111] ${
+                  secondsLeft <= 60 ? 'bg-[#F26B4D] text-white animate-pulse' : 'bg-white'
+                }`}
+              >
+                <Clock size={15} strokeWidth={3} className="shrink-0" />
+                {String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:
+                {String(secondsLeft % 60).padStart(2, '0')}
+              </div>
+            )}
+            <button
+              onClick={onClose}
+              className="flex-shrink-0 w-8 h-8 md:w-10 md:h-10 border-2 md:border-[3px] border-black bg-white rounded-full flex items-center justify-center hover:scale-105 transition-transform shadow-[2px_2px_0px_0px_#111]"
+            >
+              <X size={16} strokeWidth={3} className="md:w-5 md:h-5" />
+            </button>
+          </div>
         </div>
+
+        {/* Says why the quiz submitted itself, so a student who looks up to a
+            scorecard they did not trigger is not left guessing. */}
+        {timedOut && scorecard && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-[#F26B4D] text-white font-bold text-sm border-b-2 border-black">
+            <Clock size={16} strokeWidth={3} className="shrink-0" />
+            Time ran out — your answers were submitted automatically.
+          </div>
+        )}
 
         {isLoading && (
           <div className="p-8 md:p-12 text-center font-bold text-base md:text-xl text-gray-500">

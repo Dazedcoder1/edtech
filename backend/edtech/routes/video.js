@@ -1,6 +1,8 @@
 import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
+import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+
 
 const router = express.Router();
 
@@ -35,7 +37,7 @@ router.post("/progress", authMiddleware, async (req, res) => {
 
         if (!isAdmin && !isCreator && !isPreviewVideo) {
             const enrollmentCheck = await pool.query(
-                `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}`,
                 [userId, courseId]
             );
             if (enrollmentCheck.rows.length === 0) {
@@ -107,7 +109,7 @@ router.get("/progress/:contentId", authMiddleware, async (req, res) => {
 
         if (!isAdmin && !isCreator && !isPreviewVideo) {
             const enrollmentCheck = await pool.query(
-                `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}`,
                 [userId, courseId]
             );
             if (enrollmentCheck.rows.length === 0) {

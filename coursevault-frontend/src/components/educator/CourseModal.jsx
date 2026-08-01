@@ -9,6 +9,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const [price, setPrice] = useState(0);
   const [status, setStatus] = useState('draft');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
+  const [validityMonths, setValidityMonths] = useState(''); // blank = lifetime
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
@@ -19,12 +20,14 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setPrice(course.price || 0);
       setStatus(course.status || 'draft');
       setThumbnailUrl(course.thumbnail_url || '');
+      setValidityMonths(course.access_duration_months ?? '');
     } else {
       setTitle('');
       setDescription('');
       setPrice(0);
       setStatus('draft');
       setThumbnailUrl('');
+      setValidityMonths('');
     }
   }, [course, isOpen]);
 
@@ -84,12 +87,23 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
+    const trimmedValidity = String(validityMonths).trim();
+    if (trimmedValidity !== '') {
+      const months = Number(trimmedValidity);
+      if (!Number.isInteger(months) || months < 1 || months > 120) {
+        setIsSubmitting(false);
+        return alert('Validity must be a whole number of months between 1 and 120, or left blank for lifetime access.');
+      }
+    }
+
     const data = { 
       title, 
       description, 
       price: parseFloat(price), 
       status,
-      thumbnail_url: thumbnailUrl 
+      thumbnail_url: thumbnailUrl,
+      // Blank means lifetime; the server stores null.
+      access_duration_months: trimmedValidity === '' ? null : Number(trimmedValidity),
     };
 
     if (!course && parentCourseId) {
@@ -198,6 +212,28 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
                 <option value="published">Published</option>
               </select>
             </div>
+          </div>
+
+          <div>
+            <label className="font-bold text-sm ml-1 mb-1 block">Access validity</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="1"
+                max="120"
+                step="1"
+                value={validityMonths}
+                onChange={e => setValidityMonths(e.target.value)}
+                placeholder="Lifetime"
+                className="w-32 bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
+              />
+              <span className="font-bold text-sm text-gray-600">months</span>
+            </div>
+            <p className="text-xs text-gray-500 font-medium mt-1">
+              How long a student keeps access after buying. Leave blank for
+              lifetime access.
+              {course && ' Changing this affects future purchases only — students who have already paid keep the validity they bought.'}
+            </p>
           </div>
 
           <div className="flex justify-end gap-3 mt-2">

@@ -251,6 +251,20 @@ async function setupDatabase() {
         // insert rather than just disabling the reorder arrows.
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS display_order INT DEFAULT 0`);
 
+        // Per-quiz shuffling, teacher-controlled. Default true so quizzes that
+        // already exist keep the anti-copying behaviour rather than silently
+        // reverting to a fixed order when this ships.
+        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS shuffle_questions BOOLEAN DEFAULT true`);
+        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS shuffle_options BOOLEAN DEFAULT true`);
+
+        // Timed access. NULL on both means unlimited, so every existing course
+        // and every enrolment already sold keeps working untouched.
+        await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS access_duration_months INT DEFAULT NULL`);
+        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP DEFAULT NULL`);
+        // Every access check filters on it, and it is the column that decides
+        // whether a student can open a paid course.
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_enrollments_expires_at ON enrollments(expires_at)`);
+
         console.log("✅ Database schema ready");
     } catch (err) {
         console.error("❌ Database setup error:", err);

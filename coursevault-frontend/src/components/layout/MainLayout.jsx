@@ -16,7 +16,7 @@ const transitionColors = [
 ];
 
 export default function MainLayout() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -75,21 +75,21 @@ export default function MainLayout() {
 
         {/* User Info */}
         <div className="flex items-center gap-3">
+          {/* Signing out lives on the profile page now, so this pill stays
+              visible at every width rather than hiding below sm. */}
           <button
             type="button"
             onClick={() => navigate('/profile')}
-            title="Edit your profile"
+            title="Your profile"
             aria-current={location.pathname === '/profile' ? 'page' : undefined}
-            className={`hidden sm:flex px-4 py-1.5 rounded-[30px] border-2 border-black font-bold text-xs items-center gap-2 cursor-pointer transition-colors ${
+            className={`flex max-w-[9rem] px-3 sm:px-4 py-1.5 rounded-[30px] border-2 border-black font-bold text-xs items-center gap-2 cursor-pointer transition-colors ${
               location.pathname === '/profile'
                 ? 'bg-[#F9E076]'
                 : 'bg-white hover:bg-[#F9E076]'
             }`}
           >
-            {user?.name || 'student'}
-          </button>
-          <button onClick={logout} className="px-4 py-1.5 rounded-[30px] border-2 border-black bg-white font-bold text-xs hover:bg-[#F26B4D] hover:text-white transition-colors">
-            Exit
+            <UserIcon size={13} strokeWidth={3} className="shrink-0" />
+            <span className="truncate">{user?.name || 'student'}</span>
           </button>
         </div>
       </nav>
@@ -127,8 +127,7 @@ export default function MainLayout() {
           );
         })}
 
-        {/* The name pill in the header is `hidden sm:flex`, so without this
-            there is no route to /profile at all on a phone. */}
+        {/* Phone route to the profile page, which is also where sign-out is. */}
         <button
           onClick={() => navigate('/profile')}
           className={`flex flex-col items-center justify-center gap-0.5 px-4 py-1.5 rounded-2xl font-bold text-[11px] transition-colors ${

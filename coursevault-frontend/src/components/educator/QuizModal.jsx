@@ -19,6 +19,9 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState(null);
   const [showImport, setShowImport] = useState(false);
+  const [timeLimit, setTimeLimit] = useState(''); // blank = untimed
+  const [shuffleQuestions, setShuffleQuestions] = useState(true);
+  const [shuffleOptions, setShuffleOptions] = useState(true);
 
   useEffect(() => {
     if (isOpen) {
@@ -27,6 +30,9 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
       setQuestions([emptyQuestion()]);
       setUploadingIndex(null);
       setShowImport(false);
+      setTimeLimit('');
+      setShuffleQuestions(true);
+      setShuffleOptions(true);
     }
   }, [isOpen]);
 
@@ -131,6 +137,14 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
       if (q.options.length < 2) return alert('Every question needs at least 2 options.');
     }
 
+    const trimmedLimit = String(timeLimit).trim();
+    if (trimmedLimit !== '') {
+      const mins = Number(trimmedLimit);
+      if (!Number.isInteger(mins) || mins < 1 || mins > 480) {
+        return alert('Time limit must be a whole number of minutes between 1 and 480, or left blank for no limit.');
+      }
+    }
+
     setIsSaving(true);
     try {
       await fetchAPI('/quiz/create', {
@@ -140,7 +154,11 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
           title, 
           description, 
           questions, 
-          folder_id: folderId 
+          folder_id: folderId,
+          // Blank means untimed; the server stores null.
+          time_limit: trimmedLimit === '' ? null : Number(trimmedLimit),
+          shuffle_questions: shuffleQuestions,
+          shuffle_options: shuffleOptions,
         }),
       });
       onSave();
@@ -196,6 +214,63 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
               multiline={true}
               rows={2}
             />
+          </div>
+
+          <div>
+            <label className="block font-bold text-sm mb-1">Time limit</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="1"
+                max="480"
+                step="1"
+                value={timeLimit}
+                onChange={(e) => setTimeLimit(e.target.value)}
+                placeholder="No limit"
+                className="w-32 border-2 border-black rounded-xl px-3 py-2 font-medium bg-white focus:outline-none focus:ring-2 focus:ring-[#F26B4D]"
+              />
+              <span className="font-bold text-sm text-gray-600">minutes</span>
+            </div>
+            <p className="text-[11px] text-gray-500 font-medium mt-1">
+              Leave blank for an untimed quiz. When set, the quiz submits
+              automatically once the time runs out.
+            </p>
+          </div>
+
+          <div className="border-2 border-black rounded-xl p-3 bg-[#F4DFD8]">
+            <p className="font-black text-xs uppercase tracking-wide mb-2">Anti-copying</p>
+            <label className="flex items-start gap-2 cursor-pointer select-none mb-2">
+              <input
+                type="checkbox"
+                checked={shuffleQuestions}
+                onChange={(e) => setShuffleQuestions(e.target.checked)}
+                className="w-5 h-5 mt-0.5 shrink-0 border-2 border-black rounded cursor-pointer accent-[#F26B4D]"
+              />
+              <span className="text-sm font-bold">
+                Shuffle question order
+                <span className="block font-medium text-[11px] text-gray-600">
+                  Each student gets the questions in a different order.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={shuffleOptions}
+                onChange={(e) => setShuffleOptions(e.target.checked)}
+                className="w-5 h-5 mt-0.5 shrink-0 border-2 border-black rounded cursor-pointer accent-[#F26B4D]"
+              />
+              <span className="text-sm font-bold">
+                Shuffle answer options
+                <span className="block font-medium text-[11px] text-gray-600">
+                  The correct answer sits in a different position for each student.
+                </span>
+              </span>
+            </label>
+            <p className="text-[11px] text-gray-600 font-medium mt-2 leading-snug">
+              Turn both off for questions where order matters — "all of the above",
+              or steps that read in sequence. You always see your own order here.
+            </p>
           </div>
 
           {questions.map((q, qIndex) => (

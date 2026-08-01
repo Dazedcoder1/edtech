@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Phone, Lock, Check, AlertTriangle } from 'lucide-react';
+import { User, Mail, Phone, Lock, Check, AlertTriangle, LogOut } from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
@@ -36,7 +36,7 @@ function Banner({ tone, children }) {
 }
 
 export default function ProfilePage() {
-  const { user, applyProfileUpdate } = useAuth();
+  const { user, applyProfileUpdate, logout } = useAuth();
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -81,6 +81,12 @@ export default function ProfilePage() {
     } finally {
       setSavingProfile(false);
     }
+  };
+
+  // Confirmed because this used to be a header button people hit by accident;
+  // on a page you visit deliberately an accidental click is likelier still.
+  const handleSignOut = () => {
+    if (window.confirm('Sign out of your account on this device?')) logout();
   };
 
   const savePassword = async (e) => {
@@ -246,6 +252,23 @@ export default function ProfilePage() {
           </Button>
         </div>
       </form>
+
+      {/* ----------------------------------------------------------- session */}
+      <div className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="font-black text-lg uppercase">Session</h2>
+          <p className="text-sm text-gray-600 font-medium mt-0.5">
+            Signs you out on this device only.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="h-11 shrink-0 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
+        >
+          <LogOut size={16} strokeWidth={2.5} /> Sign out
+        </button>
+      </div>
     </div>
   );
 }

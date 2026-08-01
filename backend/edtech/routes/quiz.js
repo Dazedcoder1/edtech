@@ -1,6 +1,12 @@
 import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
+import {
+    seededPermutation,
+    invertPermutation,
+    questionOrderSeed,
+    optionOrderSeed,
+} from "../utils/quizShuffle.js";
 
 const router = express.Router();
 
@@ -51,13 +57,32 @@ async function checkQuizAccess(db, quizId, user) {
     const courseIds = parentCourseId ? [courseId, parentCourseId] : [courseId];
 
     const rows = await db.query(
-        `SELECT course_id, status, payment_status FROM enrollments
+        `SELECT course_id, status, payment_status, expires_at FROM enrollments
          WHERE user_id = $1 AND course_id = ANY($2::uuid[])`,
         [user.id, courseIds]
     );
 
-    if (rows.rows.some((r) => r.status === 'active')) {
+    // Filtered in JS here rather than SQL, so expiry has to be applied by hand.
+    const valid = (r) =>
+        r.status === 'active' && (!r.expires_at || new Date(r.expires_at) > new Date());
+
+    if (rows.rows.some(valid)) {
         return { ok: true, courseId, isOwner };
+    }
+
+    // A lapsed enrolment is a different problem from never having enrolled, and
+    // the student can fix it themselves — say so instead of "not enrolled".
+    const lapsed = rows.rows.find(
+        (r) => r.status === 'active' && r.expires_at && new Date(r.expires_at) <= new Date()
+    );
+    if (lapsed) {
+        return {
+            ok: false,
+            status: 403,
+            error: `Your access to "${courseTitle}" expired on ` +
+                   `${new Date(lapsed.expires_at).toLocaleDateString()}. Renew it to continue.`,
+            expired: true,
+        };
     }
 
     // Say what is actually wrong. "You must be enrolled" is unhelpful — and
@@ -82,11 +107,38 @@ async function checkQuizAccess(db, quizId, user) {
 // CREATE QUIZ
 // ============================================================
 router.post("/create", authMiddleware, async (req, res) => {
-    const { moduleId, title, description, questions, folder_id } = req.body;
+    const {
+        moduleId, title, description, questions, folder_id, time_limit,
+        shuffle_questions, shuffle_options,
+    } = req.body;
 
     if (!moduleId || !title || !Array.isArray(questions) || questions.length === 0) {
         return res.status(400).json({ error: "moduleId, title and at least one question are required" });
     }
+
+    /*
+     * Optional per-quiz time limit, in whole minutes.
+     *
+     * Null means untimed, which is the default and what every existing quiz
+     * has. Validated rather than passed straight through: a zero or negative
+     * limit would produce a quiz that is over before it starts, and a huge
+     * value is more likely a typo (600 for "6:00") than an intended ten-hour
+     * exam. The cap is generous enough for a real paper.
+     */
+    let minutes = null;
+    if (time_limit !== undefined && time_limit !== null && time_limit !== "") {
+        minutes = Number(time_limit);
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+            return res.status(400).json({
+                error: "Time limit must be a whole number of minutes between 1 and 480, or left empty for no limit.",
+            });
+        }
+    }
+
+    // Absent means "on": the checkboxes default to ticked, and an older client
+    // that does not send them should not quietly disable shuffling.
+    const shuffleQuestions = shuffle_questions !== false;
+    const shuffleOptions = shuffle_options !== false;
 
     const moduleCheck = await pool.query(`
         SELECT c.educator_id
@@ -120,9 +172,15 @@ router.post("/create", authMiddleware, async (req, res) => {
         await client.query("BEGIN");
 
         const quizResult = await client.query(`
-            INSERT INTO quizzes (module_id, title, description, created_by, folder_id)
-            VALUES ($1, $2, $3, $4, $5) RETURNING *
-        `, [moduleId, title, description || "", req.user.id, folder_id || null]);
+            INSERT INTO quizzes (
+                module_id, title, description, created_by, folder_id, time_limit,
+                shuffle_questions, shuffle_options
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *
+        `, [
+            moduleId, title, description || "", req.user.id, folder_id || null, minutes,
+            shuffleQuestions, shuffleOptions,
+        ]);
 
         const quiz = quizResult.rows[0];
 
@@ -311,6 +369,21 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
             return res.status(access.status).json({ error: access.error });
         }
         const courseId = access.courseId;
+        const isOwner = access.isOwner;
+
+        /*
+         * Grading has to use exactly the shuffle the serve route used. Reading
+         * the flags here rather than assuming them is the difference between
+         * translating the student's choice correctly and silently marking a
+         * whole class wrong the moment a teacher turns shuffling off.
+         */
+        const flagsResult = await client.query(
+            `SELECT shuffle_questions, shuffle_options FROM quizzes WHERE id = $1`,
+            [quizId]
+        );
+        const flags = flagsResult.rows[0] || {};
+        const shuffleQ = !isOwner && flags.shuffle_questions !== false;
+        const shuffleO = !isOwner && flags.shuffle_options !== false;
 
         await client.query("BEGIN");
 
@@ -319,13 +392,38 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
         // Save every answer submitted from the frontend
         for (const [questionId, selectedOption] of Object.entries(answers)) {
             const questionResult = await client.query(`
-                SELECT correct_option_index FROM quiz_questions
+                SELECT correct_option_index, options FROM quiz_questions
                 WHERE id = $1 AND quiz_id = $2
             `, [questionId, quizId]);
 
             if (questionResult.rows.length === 0) continue; // ignore stray/unknown question ids
 
-            const isCorrect = selectedOption === questionResult.rows[0].correct_option_index;
+            const row = questionResult.rows[0];
+
+            /*
+             * The student picked a position in *their* shuffled list, so it has
+             * to be translated back before it means anything. Rebuilding the
+             * same permutation from the same seed is what makes this possible
+             * without having stored the order at serve time.
+             *
+             * Answers are persisted in original order so the stored data stays
+             * canonical — a later change to the shuffle cannot retroactively
+             * alter what an already-graded student appears to have chosen.
+             */
+            const opts = Array.isArray(row.options) ? row.options : [];
+            const optionOrder = shuffleO
+                ? seededPermutation(opts.length, optionOrderSeed(quizId, userId, questionId))
+                : opts.map((_, i) => i);
+
+            const displayIndex = Number(selectedOption);
+            const originalIndex =
+                Number.isInteger(displayIndex) && displayIndex >= 0 && displayIndex < optionOrder.length
+                    ? optionOrder[displayIndex]
+                    : null;
+
+            // An out-of-range index means a stale client or a tampered payload;
+            // record it as wrong rather than crashing or crediting it.
+            const isCorrect = originalIndex !== null && originalIndex === row.correct_option_index;
 
             await client.query(`
                 INSERT INTO quiz_answers (attempt_id, question_id, selected_option, is_correct, answered_at)
@@ -335,7 +433,7 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
                     selected_option = EXCLUDED.selected_option,
                     is_correct = EXCLUDED.is_correct,
                     answered_at = NOW()
-            `, [attemptId, questionId, selectedOption, isCorrect]);
+            `, [attemptId, questionId, originalIndex, isCorrect]);
         }
 
         // Recompute totals from what's actually saved for this attempt
@@ -391,15 +489,42 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
             ORDER BY q.created_at ASC
         `, [attemptId, quizId]);
 
-        const results = reviewResult.rows.map((r) => ({
-            questionId: r.question_id,
-            questionText: r.question_text,
-            options: r.options,
-            imageUrl: r.image_url,
-            selectedOption: r.selected_option,
-            correctOption: r.correct_option_index,
-            isCorrect: r.is_correct,
-        }));
+        /*
+         * Re-apply the student's own shuffle to the review.
+         *
+         * Storage is canonical (original order), so a review rendered straight
+         * from the database would list the options in an order the student
+         * never saw — "you picked the third one" pointing at something that had
+         * been second on their screen. Mapping both indices back into display
+         * space keeps the review consistent with the quiz they actually sat.
+         */
+        const reviewRows = reviewResult.rows;
+        const reviewQuestionOrder = shuffleQ
+            ? seededPermutation(reviewRows.length, questionOrderSeed(quizId, userId))
+            : reviewRows.map((_, i) => i);
+
+        const results = reviewQuestionOrder.map((pos) => {
+            const r = reviewRows[pos];
+            const opts = Array.isArray(r.options) ? r.options : [];
+
+            const optionOrder = shuffleO
+                ? seededPermutation(opts.length, optionOrderSeed(quizId, userId, r.question_id))
+                : opts.map((_, i) => i);
+            const toDisplay = invertPermutation(optionOrder);
+
+            return {
+                questionId: r.question_id,
+                questionText: r.question_text,
+                options: optionOrder.map((i) => opts[i]),
+                imageUrl: r.image_url,
+                selectedOption:
+                    r.selected_option === null || r.selected_option === undefined
+                        ? null
+                        : toDisplay[r.selected_option] ?? null,
+                correctOption: toDisplay[r.correct_option_index] ?? r.correct_option_index,
+                isCorrect: r.is_correct,
+            };
+        });
 
         const unanswered = results.filter((r) => r.selectedOption === null).length;
 
@@ -635,13 +760,45 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
             FROM quiz_questions WHERE quiz_id = $1 ORDER BY created_at ASC
         `, [quizId]);
 
-        const questions = questionsResult.rows.map((q) => ({
-            id: q.id,
-            question_text: q.question_text,
-            options: q.options,
-            image_url: q.image_url,
-            ...(isOwner ? { correct_option_index: q.correct_option_index } : {})
-        }));
+        /*
+         * Students get their own question and option order; the author does
+         * not. Shuffling the owner's view would make the quiz they wrote hard
+         * to proof-read against the source document, and they are not the ones
+         * copying from a neighbour.
+         *
+         * Derived from (quizId, userId) rather than randomised per request, so
+         * a refresh mid-quiz does not reorder the options under the student and
+         * turn an already-selected answer into a different one.
+         */
+        const rows = questionsResult.rows;
+
+        // The author always sees the order they wrote, whatever the flags say.
+        const shuffleQ = !isOwner && quiz.shuffle_questions !== false;
+        const shuffleO = !isOwner && quiz.shuffle_options !== false;
+
+        const questionOrder = shuffleQ
+            ? seededPermutation(rows.length, questionOrderSeed(quizId, req.user.id))
+            : rows.map((_, i) => i);
+
+        const questions = questionOrder.map((originalPos) => {
+            const q = rows[originalPos];
+            const opts = Array.isArray(q.options) ? q.options : [];
+
+            const optionOrder = shuffleO
+                ? seededPermutation(opts.length, optionOrderSeed(quizId, req.user.id, q.id))
+                : opts.map((_, i) => i);
+
+            return {
+                id: q.id,
+                question_text: q.question_text,
+                options: optionOrder.map((i) => opts[i]),
+                image_url: q.image_url,
+                // Withheld from students entirely. Note it would also be the
+                // *original* index and therefore wrong against the shuffled
+                // options — another reason not to leak it.
+                ...(isOwner ? { correct_option_index: q.correct_option_index } : {})
+            };
+        });
 
         let attempt = null;
         if (!isOwner) {
@@ -664,7 +821,12 @@ router.get("/:quizId", authMiddleware, async (req, res) => {
                 title: quiz.title,
                 description: quiz.description,
                 module_id: quiz.module_id,
-                folder_id: quiz.folder_id
+                folder_id: quiz.folder_id,
+                shuffle_questions: quiz.shuffle_questions,
+                shuffle_options: quiz.shuffle_options,
+                // Without this the countdown has nothing to count — the field
+                // was being dropped here, so every quiz looked untimed.
+                time_limit: quiz.time_limit
             },
             questions,
             isOwner,
@@ -689,6 +851,7 @@ router.get("/module/:moduleId", authMiddleware, async (req, res) => {
         // attempt so the frontend can show a "Completed" badge + score.
         const result = await pool.query(`
             SELECT q.id, q.title, q.description, q.created_at, q.folder_id,
+                   q.time_limit,
                    COALESCE(q.priority, 0) AS priority,
                    COUNT(DISTINCT qq.id)::int AS question_count,
                    qa.score AS user_score,

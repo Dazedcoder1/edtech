@@ -1,7 +1,6 @@
 import React from 'react';
-import { Play, BookOpen, Lock } from 'lucide-react';
+import { Play, BookOpen, Lock, CheckCircle2 } from 'lucide-react';
 import Badge from '../ui/Badge.jsx';
-import CircularProgress from '../ui/CircularProgress.jsx'; // <-- Imported the ring!
 import { getBgColor, getTagColor } from '../../utils/format.js';
 import { resolveMediaUrl } from '../../services/api.js';
 
@@ -13,6 +12,10 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
   const tagColor = getTagColor(course.id);
 
   const isPaid = course.price > 0;
+
+  // Clamped: a stale or miscounted progress value must not overflow the bar.
+  const progressPct = Math.max(0, Math.min(100, Math.round(course.progress || 0)));
+  const isComplete = progressPct >= 100;
   const isPurchased = isMyLearning || course.is_purchased;
   const needsPurchase = isPaid && !isPurchased;
 
@@ -65,12 +68,39 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
             </>
           )}
 
-          {/* TOP RIGHT BADGE: Shows Ring if My Learning, Price if Explore */}
+          {/*
+            Completion, shown as a chip plus a bar along the bottom of the
+            thumbnail rather than a progress ring in the corner.
+
+            The ring had to be scaled to 75% to fit on a phone, which left its
+            percentage text barely legible, and it sat on top of the artwork.
+            A bar reads at a glance at any size, and finishing a course now
+            gets its own state instead of an unremarkable "100".
+          */}
           {isMyLearning ? (
-            <div className="absolute top-1 right-1 md:top-4 md:right-4 bg-white rounded-full border-2 border-black md:shadow-[2px_2px_0px_0px_#111] z-10 p-0.5 scale-75 md:scale-100">
-              {/* Shrink size slightly to fit nicely in the corner */}
-              <CircularProgress size="small" percentage={course.progress || 0} color="#F26B4D" />
-            </div>
+            <>
+              <div
+                className={`absolute top-1 right-1 md:top-4 md:right-4 z-10 flex items-center gap-1 rounded-full border-2 border-black px-1.5 py-0.5 md:px-2.5 md:py-1 text-[9px] md:text-xs font-black uppercase tracking-wide md:shadow-[2px_2px_0px_0px_#111] ${
+                  isComplete ? 'bg-[#A7E2D1] text-black' : 'bg-white text-black'
+                }`}
+              >
+                {isComplete ? (
+                  <>
+                    <CheckCircle2 size={11} strokeWidth={3} className="shrink-0 md:w-3.5 md:h-3.5" />
+                    Done
+                  </>
+                ) : (
+                  `${progressPct}%`
+                )}
+              </div>
+
+              <div className="absolute bottom-0 left-0 right-0 h-1.5 md:h-2 bg-black/20 z-10">
+                <div
+                  className={`h-full transition-[width] duration-500 ${isComplete ? 'bg-[#2FA36B]' : 'bg-[#F26B4D]'}`}
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+            </>
           ) : (
             <div className="absolute bottom-1 right-1 md:bottom-auto md:top-4 md:right-4 bg-white border border-black rounded-full px-1.5 py-0.5 md:px-3 md:py-1 text-[9px] md:text-xs font-bold md:shadow-[2px_2px_0px_0px_#111] flex items-center gap-1 z-10">
               {isPaid ? (

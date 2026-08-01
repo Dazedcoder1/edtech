@@ -1,6 +1,8 @@
 ﻿import express from "express";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
+import { activeEnrolmentSql, parseDurationMonths } from "../utils/enrollmentAccess.js";
+
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../config/jwt.js";
 
@@ -156,7 +158,7 @@ router.get("/:id", async (req, res) => {
                 const decoded = jwt.verify(token, JWT_SECRET);
 
                 const enrollmentCheck = await pool.query(
-                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND status = 'active'`,
+                    `SELECT id FROM enrollments WHERE user_id = $1 AND course_id = $2 AND ${activeEnrolmentSql('')}`,
                     [decoded.id, id]
                 );
                 isEnrolled = enrollmentCheck.rows.length > 0;
@@ -245,7 +247,10 @@ router.post("/", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only educators can create courses" });
         }
 
-        const { title, description, price, status, parent_course_id, thumbnail_url } = req.body;
+        const { title, description, price, status, parent_course_id, thumbnail_url, access_duration_months } = req.body;
+
+        const duration = parseDurationMonths(access_duration_months);
+        if (!duration.ok) return res.status(400).json({ error: duration.error });
 
         const client = await pool.connect();
 
@@ -267,8 +272,8 @@ router.post("/", authMiddleware, async (req, res) => {
              * course would restart at 1.
              */
             const courseResult = await client.query(`
-    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, display_order)
-    SELECT $1, $2, $3, $4, $5, $6, true, $7,
+    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, access_duration_months, display_order)
+    SELECT $1, $2, $3, $4, $5, $6, true, $7, $8,
            COALESCE((
                SELECT MAX(display_order) FROM courses
                WHERE educator_id = $1
@@ -276,7 +281,7 @@ router.post("/", authMiddleware, async (req, res) => {
                  AND parent_course_id IS NOT DISTINCT FROM $7
            ), 0) + 1
     RETURNING *
-`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null]);
+`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null, duration.months]);
             const course = courseResult.rows[0];
 
             const moduleResult = await client.query(`
@@ -352,7 +357,10 @@ router.put("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only course creator can update courses" });
         }
 
-        const { title, description, price, status ,thumbnail_url} = req.body;
+        const { title, description, price, status, thumbnail_url, access_duration_months } = req.body;
+
+        const duration = parseDurationMonths(access_duration_months);
+        if (!duration.ok) return res.status(400).json({ error: duration.error });
 
         const result = await pool.query(`
     UPDATE courses
@@ -361,10 +369,15 @@ router.put("/:id", authMiddleware, async (req, res) => {
         price = COALESCE($3, price),
         status = COALESCE($4, status),
         thumbnail_url = COALESCE($5, thumbnail_url),
+        -- Not COALESCE: clearing the field back to lifetime access has to be
+        -- possible, and COALESCE would read that null as "leave unchanged".
+        -- Only applies to future purchases; enrolments already sold keep the
+        -- expires_at stamped when they were bought.
+        access_duration_months = $6,
         updated_at = NOW()
-    WHERE id = $6
+    WHERE id = $7
     RETURNING *
-`, [title, description, price, status, thumbnail_url, id]);
+`, [title, description, price, status, thumbnail_url, duration.months, id]);
         res.json({ success: true, course: result.rows[0] });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -393,15 +406,37 @@ router.delete("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only course creator can delete courses" });
         }
 
-        await pool.query(`
+        /*
+         * Delete the class and its subjects together.
+         *
+         * Only the named row was being deactivated, so deleting a class left
+         * its subjects active and still enrolled-in — reachable by direct link,
+         * and still listed for students who had bought them, while the class
+         * they belonged to had vanished.
+         *
+         * The enrolment rows are deliberately left alone. They are the record
+         * that a purchase happened, which matters for refunds and revenue
+         * reporting; access is denied because the course is inactive, not
+         * because the sale was erased.
+         */
+        const result = await pool.query(`
             UPDATE courses
             SET is_active = false,
                 status = 'deleted',
                 updated_at = NOW()
-            WHERE id = $1 AND is_active = true
+            WHERE (id = $1 OR parent_course_id = $1) AND is_active = true
+            RETURNING id, parent_course_id
         `, [courseId]);
 
-        res.json({ success: true, message: "Course deactivated successfully" });
+        const subjectsRemoved = result.rows.filter((r) => r.parent_course_id).length;
+
+        res.json({
+            success: true,
+            message: subjectsRemoved
+                ? `Course deleted, along with ${subjectsRemoved} subject${subjectsRemoved === 1 ? '' : 's'} inside it.`
+                : "Course deactivated successfully",
+            removed: result.rows.length,
+        });
     } catch (err) {
         console.error("Delete course error:", err);
         res.status(500).json({ error: err.message });

@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
 import pool from "../config/database.js";
 
 import { JWT_SECRET } from "../config/jwt.js";
@@ -178,7 +179,7 @@ async function authMiddleware(req, res, next) {
                       `SELECT e.id
                        FROM enrollments e
                        WHERE e.user_id = $1
-                         AND e.status = 'active'
+                         AND ${activeEnrolmentSql('e')}
                          AND e.course_id IN (
                              SELECT $2::uuid
                              UNION

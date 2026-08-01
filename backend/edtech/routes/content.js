@@ -9,6 +9,8 @@ import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
 import authMiddleware from "../middleware/auth.js";
+import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+
 import { generateFileHash, getFileExtension, getMimeType } from "../utils/helpers.js";
 
 const router = express.Router();
@@ -572,10 +574,27 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
         }
 
         const courseCheck = await pool.query(`
-            SELECT c.educator_id, c.id as course_id
+            SELECT c.educator_id, c.id as course_id, c.is_active AS course_is_active
             FROM courses c JOIN modules m ON m.course_id = c.id
             WHERE $1::uuid = ANY(m.content_ids) LIMIT 1
         `, [id]);
+
+        /*
+         * A deleted course must stop serving its files.
+         *
+         * Removing it from the listings only hides it — a student who had the
+         * page open, or kept a direct link, could still pull the video or PDF
+         * because these gates only ever asked about enrolment. The creator is
+         * exempt so they can still review what they deleted.
+         */
+        if (courseCheck.rows.length > 0 && courseCheck.rows[0].course_is_active === false) {
+            const stillOwner =
+                String(courseCheck.rows[0].educator_id).toLowerCase() === String(userId).toLowerCase() ||
+                req.user.role === 'admin';
+            if (!stillOwner) {
+                return res.status(403).json({ error: "This course is no longer available." });
+            }
+        }
 
         const educatorId = courseCheck.rows.length > 0 ? courseCheck.rows[0].educator_id : null;
         const isCourseOwner = educatorId && String(educatorId).toLowerCase() === String(userId).toLowerCase();
@@ -599,7 +618,7 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
                 `SELECT 1
                    FROM enrollments
                   WHERE user_id = $1
-                    AND status = 'active'
+                    AND ${activeEnrolmentSql('')}
                     AND course_id IN (
                         SELECT $2::uuid
                         UNION
@@ -666,10 +685,27 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
         if (content.content_type !== "video") return res.status(400).json({ error: "Not a video" });
 
         const courseCheck = await pool.query(`
-            SELECT c.educator_id, c.id as course_id
+            SELECT c.educator_id, c.id as course_id, c.is_active AS course_is_active
             FROM courses c JOIN modules m ON m.course_id = c.id
             WHERE $1::uuid = ANY(m.content_ids) LIMIT 1
         `, [id]);
+
+        /*
+         * A deleted course must stop serving its files.
+         *
+         * Removing it from the listings only hides it — a student who had the
+         * page open, or kept a direct link, could still pull the video or PDF
+         * because these gates only ever asked about enrolment. The creator is
+         * exempt so they can still review what they deleted.
+         */
+        if (courseCheck.rows.length > 0 && courseCheck.rows[0].course_is_active === false) {
+            const stillOwner =
+                String(courseCheck.rows[0].educator_id).toLowerCase() === String(userId).toLowerCase() ||
+                req.user.role === 'admin';
+            if (!stillOwner) {
+                return res.status(403).json({ error: "This course is no longer available." });
+            }
+        }
 
         const educatorId = courseCheck.rows.length > 0 ? courseCheck.rows[0].educator_id : null;
         const isCourseOwner = educatorId && String(educatorId).toLowerCase() === String(userId).toLowerCase();
@@ -693,7 +729,7 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
                 `SELECT 1
                    FROM enrollments
                   WHERE user_id = $1
-                    AND status = 'active'
+                    AND ${activeEnrolmentSql('')}
                     AND course_id IN (
                         SELECT $2::uuid
                         UNION

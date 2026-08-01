@@ -19,6 +19,7 @@ router.get("/", authMiddleware, async (req, res) => {
                 e.payment_id,
                 e.amount_paid,
                 e.enrolled_at,
+                e.expires_at,
                 c.title as course_title,
                 c.description as course_description,
                 c.thumbnail_url,
@@ -91,7 +92,11 @@ router.get("/", authMiddleware, async (req, res) => {
             FROM enrollments e
             JOIN courses c ON e.course_id = c.id
             JOIN users u ON c.educator_id = u.id
-            WHERE e.user_id = $1 AND e.status = 'active'
+            WHERE e.user_id = $1
+              AND e.status = 'active'
+              -- A course the teacher deleted must leave the student's shelf.
+              -- Without this it stayed listed and opened to "Course not found".
+              AND c.is_active = true
             ORDER BY e.enrolled_at DESC
         `, [userId]);
 

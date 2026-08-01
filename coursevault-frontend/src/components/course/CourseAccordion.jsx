@@ -99,6 +99,66 @@ export default function CourseAccordion({
     }
   };
 
+  /**
+   * Clear the General tab.
+   *
+   * Deleting a chapter is non-destructive — its contents fall back to General.
+   * General has no fallback of its own (it *is* the fallback), so there is
+   * nowhere for its items to go and emptying it means deleting them. The
+   * confirmation says so explicitly and names the counts, because the same red
+   * cross on a chapter tab means something much safer.
+   *
+   * Once it is empty the tab hides itself, so this reads as "delete General".
+   */
+  const handleDeleteGeneral = async (e) => {
+    e.stopPropagation();
+
+    const unfiledContent = contents.filter((c) => !c.folder_id);
+    const unfiledQuizzes = quizzes.filter((q) => !q.folder_id);
+    const total = unfiledContent.length + unfiledQuizzes.length;
+
+    // Already empty — nothing to delete, just step off it so it can hide.
+    if (total === 0) {
+      if (folders.length > 0) setActiveTabId(folders[0].id);
+      return;
+    }
+
+    const parts = [];
+    if (unfiledContent.length) {
+      parts.push(`${unfiledContent.length} file${unfiledContent.length === 1 ? '' : 's'}`);
+    }
+    if (unfiledQuizzes.length) {
+      parts.push(`${unfiledQuizzes.length} quiz${unfiledQuizzes.length === 1 ? '' : 'zes'}`);
+    }
+
+    const confirmed = window.confirm(
+      `Delete everything in General?\n\n` +
+      `This removes ${parts.join(' and ')}.\n\n` +
+      `Deleting a chapter moves its contents here for safekeeping — General has ` +
+      `nowhere to move things to, so these are deleted instead.`
+    );
+    if (!confirmed) return;
+
+    try {
+      // Sequential on purpose: a partial failure should stop rather than fire
+      // off the rest, and these lists are small.
+      for (const c of unfiledContent) {
+        await fetchAPI(`/content/${c.id}`, { method: 'DELETE' });
+      }
+      for (const q of unfiledQuizzes) {
+        await fetchAPI(`/quiz/${q.id}`, { method: 'DELETE' });
+      }
+
+      setQuizzes((prev) => prev.filter((q) => q.folder_id));
+      if (folders.length > 0) setActiveTabId(folders[0].id);
+      if (onRefreshCurriculum) onRefreshCurriculum({ silent: true });
+    } catch (err) {
+      // Some may already be gone — refresh so the UI matches the server.
+      if (onRefreshCurriculum) onRefreshCurriculum({ silent: true });
+      alert(err.message || 'Could not clear the General tab.');
+    }
+  };
+
   const toggleContentSelection = (id) => {
     setSelectedContentIds(prev =>
       prev.includes(id) ? prev.filter(cId => cId !== id) : [...prev, id]
@@ -152,6 +212,26 @@ export default function CourseAccordion({
   const activeQuizzes = quizzes.filter(q =>
     activeTabId === null ? !q.folder_id : q.folder_id === activeTabId
   );
+
+  // Anything sitting in the unfiled bucket, regardless of which tab is open.
+  // Gated on quizzesLoaded: quizzes arrive after the module payload, so without
+  // it the tab would judge itself empty on first paint and flicker out just
+  // before an unfiled quiz showed up.
+  const generalIsEmpty =
+    quizzesLoaded &&
+    !contents.some((c) => !c.folder_id) &&
+    !quizzes.some((q) => !q.folder_id);
+
+  /*
+   * General exists only while something is unfiled.
+   *
+   * It is not a folder you create — it is the folder_id IS NULL bucket — so it
+   * appears when items land there and goes away when they don't. Deleting it
+   * therefore leaves the strip with nothing but "+ Add Chapter", which is the
+   * intended end state. Adding content while no chapter is selected files it
+   * as unfiled again and brings the tab back.
+   */
+  const showGeneralTab = !generalIsEmpty;
 
   // 🌟 NEW: Arrow Movement Logic
   /**
@@ -367,6 +447,20 @@ export default function CourseAccordion({
       clearInterval(timer);
     };
   }, [isOpen, processingIds, pendingIds]);
+
+  /*
+   * Never leave the view pointed at a tab that is no longer on screen.
+   *
+   * Emptying General hides it, but activeTabId would still be null — so the
+   * body would keep rendering the (now invisible) unfiled bucket with no tab
+   * highlighted. Step onto the first chapter instead. With no chapters at all
+   * there is nowhere to go, and the empty state below takes over.
+   */
+  useEffect(() => {
+    if (!showGeneralTab && activeTabId === null && folders.length > 0) {
+      setActiveTabId(folders[0].id);
+    }
+  }, [showGeneralTab, activeTabId, folders]);
 
   // A list built for one tab must never render under another. Switching tabs
   // therefore drops any in-progress rearrange rather than carrying a draft
@@ -587,6 +681,8 @@ export default function CourseAccordion({
             <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 line-clamp-2 break-words">{quiz.title}</h4>
             <p className="text-xs md:text-sm font-medium text-gray-500 truncate">
               {quiz.question_count} question{quiz.question_count === 1 ? '' : 's'}
+              {/* Worth knowing before you start, not after. */}
+              {quiz.time_limit ? ` • ${quiz.time_limit} min` : ''}
               {quiz.is_completed && ` • Best score: ${quiz.user_score}%`}
             </p>
           </div>
@@ -714,15 +810,39 @@ export default function CourseAccordion({
       {isOpen && (
         <div className="border-t-2 border-black bg-gray-50 flex flex-col animate-in fade-in slide-in-from-top-4 duration-300">
           <div className="flex items-end gap-x-2 overflow-x-auto pt-3 md:pt-4 px-3 md:px-4 bg-[#F4DFD8] border-b-2 border-black scrollbar-hide pb-0">
-            <button
-              onClick={() => setActiveTabId(null)}
-              className={`px-6 py-2.5 border-2 border-black border-b-0 rounded-t-xl font-bold transition-all relative ${activeTabId === null
-                  ? 'bg-white pb-3.5 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
-                  : 'bg-[#E5CFC8] hover:bg-[#D9C3BC] text-gray-700'
-                }`}
-            >
-              General
-            </button>
+            {/*
+              General is not a folder — it is the folder_id IS NULL bucket, and
+              it is where deleting a chapter sends that chapter's contents. So
+              it cannot be deleted, only hidden once nothing is in it.
+
+              It stays visible while it holds anything, while it is the tab you
+              are looking at (otherwise the strip would yank the current tab out
+              from under you), and when there are no chapters at all — with no
+              tabs and no content, there would be nowhere to add the first item.
+            */}
+            {showGeneralTab && (
+              <div className="relative flex items-center group shrink-0">
+                <button
+                  onClick={() => setActiveTabId(null)}
+                  className={`px-6 py-2.5 border-2 border-black border-b-0 rounded-t-xl font-bold transition-all ${activeTabId === null
+                      ? 'bg-white pb-3.5 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
+                      : 'bg-[#E5CFC8] hover:bg-[#D9C3BC] text-gray-700'
+                    }`}
+                >
+                  General
+                </button>
+                {isCreator && !generalIsEmpty && (
+                  <button
+                    onClick={handleDeleteGeneral}
+                    title="Delete everything in General"
+                    aria-label="Delete everything in General"
+                    className="absolute -right-2 -top-2 bg-red-400 border-2 border-black rounded-full p-0.5 hover:bg-red-500 text-white z-20 shadow-[1px_1px_0px_0px_#111] opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                  >
+                    <X size={12} strokeWidth={3} />
+                  </button>
+                )}
+              </div>
+            )}
 
             {folders.map(folder => (
               <div key={folder.id} className="relative flex items-center group">
@@ -806,9 +926,29 @@ export default function CourseAccordion({
             )}
 
             {displayItems.length === 0 ? (
-              <div className="text-center border-2 border-dashed border-gray-300 rounded-xl py-12">
-                <p className="text-gray-500 font-bold mb-2">This tab is empty.</p>
-                {isCreator && <p className="text-sm text-gray-400">Use the buttons above to add content, or select items from other tabs to move them here.</p>}
+              <div className="text-center border-2 border-dashed border-gray-300 rounded-xl py-12 px-4">
+                {/* With General deleted and no chapters yet the strip is just
+                    "+ Add Chapter", so say that rather than "use the buttons
+                    above" — there are no content buttons to point at. */}
+                {folders.length === 0 && !showGeneralTab ? (
+                  <>
+                    <p className="text-gray-500 font-bold mb-2">No chapters yet.</p>
+                    {isCreator && (
+                      <p className="text-sm text-gray-400">
+                        Add a chapter to start organising this module's content.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="text-gray-500 font-bold mb-2">This tab is empty.</p>
+                    {isCreator && (
+                      <p className="text-sm text-gray-400">
+                        Use the buttons above to add content, or select items from other tabs to move them here.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
             ) : (
               <div className="flex flex-col gap-4">

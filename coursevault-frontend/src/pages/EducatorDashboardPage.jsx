@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard.jsx';
 import Button from '../components/ui/Button.jsx';
 import CourseModal from '../components/educator/CourseModal.jsx';
@@ -12,6 +12,7 @@ export default function EducatorDashboardPage() {
   const { user } = useAuth();
   const [courses, setCourses] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [dashQuery, setDashQuery] = useState('');
   const [isCourseModalOpen, setIsCourseModalOpen] = useState(false);
 
   // When null -> the modal creates a brand-new top-level course (same as
@@ -139,6 +140,24 @@ export default function EducatorDashboardPage() {
 
   const sortedCourses = [...topLevelCourses].sort(compareCourses);
 
+  const query = dashQuery.trim().toLowerCase();
+
+  /*
+   * A class stays in the list when it matches, and also when one of its own
+   * subjects matches — hiding the parent would make a matching subject
+   * unreachable, since subjects are only shown after expanding their class.
+   */
+  const visibleCourses = React.useMemo(() => {
+    if (!query) return sortedCourses;
+
+    const matches = (c) =>
+      `${c.title || ''} ${c.description || ''}`.toLowerCase().includes(query);
+
+    return sortedCourses.filter(
+      (course) => matches(course) || getChildCourses(course.id).some(matches)
+    );
+  }, [sortedCourses, query, courses]);
+
   const selectedCourse = topLevelCourses.find(c => c.id === selectedCourseId) || null;
   const selectedChildCourses = selectedCourse
     ? getChildCourses(selectedCourse.id).sort(compareCourses)
@@ -209,7 +228,27 @@ export default function EducatorDashboardPage() {
         </div>
       </div>
 
-      <h2 className="text-3xl font-bold mb-8 tracking-tight">Your Courses</h2>
+      <h2 className="text-3xl font-bold mb-4 tracking-tight">Your Courses</h2>
+
+      <div className="relative mb-6 max-w-md">
+        <Search size={18} strokeWidth={2.5} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" />
+        <input
+          type="search"
+          value={dashQuery}
+          onChange={(e) => setDashQuery(e.target.value)}
+          placeholder="Search your classes and subjects..."
+          aria-label="Search your classes and subjects"
+          className="w-full h-11 pl-10 pr-3 border-2 border-black rounded-xl bg-white font-medium shadow-[3px_3px_0px_0px_#111] focus:outline-none focus:ring-2 focus:ring-[#F26B4D]"
+        />
+      </div>
+
+      {query && (
+        <p className="text-sm font-bold text-gray-600 mb-4">
+          {visibleCourses.length === 0
+            ? 'No classes match that.'
+            : `${visibleCourses.length} of ${sortedCourses.length} classes shown — reordering is paused while searching.`}
+        </p>
+      )}
 
       {isLoading ? (
         <div className="text-center font-bold text-gray-400 py-20">Loading Dashboard...</div>
@@ -220,7 +259,7 @@ export default function EducatorDashboardPage() {
         </div>
       ) : (
         <div className="flex flex-col gap-4">
-          {sortedCourses.map((course, courseIndex) => {
+          {visibleCourses.map((course, courseIndex) => {
             const isSelected = course.id === selectedCourseId;
             const childCount = getChildCourses(course.id).length;
 
@@ -239,7 +278,7 @@ export default function EducatorDashboardPage() {
                     <div className="flex flex-col gap-1 shrink-0">
                       <button
                         onClick={() => moveTopLevelCourse(course.id, 'up')}
-                        disabled={courseIndex === 0}
+                        disabled={courseIndex === 0 || !!query}
                         title="Move up"
                         className="w-6 h-6 border-2 border-black rounded flex items-center justify-center bg-white hover:bg-gray-100 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
                       >
@@ -247,7 +286,7 @@ export default function EducatorDashboardPage() {
                       </button>
                       <button
                         onClick={() => moveTopLevelCourse(course.id, 'down')}
-                        disabled={courseIndex === sortedCourses.length - 1}
+                        disabled={courseIndex === visibleCourses.length - 1 || !!query}
                         title="Move down"
                         className="w-6 h-6 border-2 border-black rounded flex items-center justify-center bg-white hover:bg-gray-100 disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
                       >

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Play, Plus, Edit, Trash2, Users } from 'lucide-react';
+import { Play, Plus, Edit, Trash2, Users, Infinity as InfinityIcon } from 'lucide-react';
 import Badge from '../components/ui/Badge.jsx';
 import CourseAccordion from '../components/course/CourseAccordion.jsx';
 import MediaViewerModal from '../components/course/MediaViewerModal.jsx';
@@ -38,6 +38,7 @@ export default function CourseDetailPage() {
   // 🌟 PROGRESS TRACKING
   const [completedContentIds, setCompletedContentIds] = useState(new Set());
   const [courseProgress, setCourseProgress] = useState(0);
+  const [accessExpiresAt, setAccessExpiresAt] = useState(null);
 
   const isCreator = user?.role === 'educator' && (course?.isCreator || user?.id === course?.educator_id);
   const canAccessContent = isCreator || isEnrolled;
@@ -67,16 +68,17 @@ export default function CourseDetailPage() {
       setCourse(data.course);
       setModules(data.modules || []);
 
-      if (data.modules?.length > 0 && expandedModules.length === 0) {
-        setExpandedModules([data.modules[0].id]);
-      }
+      // Modules start collapsed. Auto-opening the first one pushed the rest of
+      // the curriculum off the screen before the student had seen what the
+      // course contained — worst on a phone, where one open module can fill
+      // the whole viewport.
 
       const enrolled = user?.role === 'educator' ? true : !!data.course.isEnrolled;
       setIsEnrolled(enrolled);
 
       // 🌟 FIX: same stale-gate issue as onContentClick — always attempt to
       // load progress and let the backend's own checks decide what comes back.
-      loadProgress(data.course.id);
+      loadProgress(data.course);
 
     } catch (err) {
       console.error(err);
@@ -87,7 +89,8 @@ export default function CourseDetailPage() {
 
   // 🌟 PROGRESS TRACKING: bulk-fetch completed content ids + reuse the
   // enrollments endpoint's already-computed percentage for the header bar.
-  const loadProgress = async (courseId) => {
+  const loadProgress = async (courseRecord) => {
+    const courseId = courseRecord?.id || courseRecord;
     try {
       const [progressData, enrollmentsData] = await Promise.all([
         fetchAPI(`/video/progress/course/${courseId}`),
@@ -96,8 +99,24 @@ export default function CourseDetailPage() {
 
       setCompletedContentIds(new Set(progressData.completedContentIds || []));
 
-      const mine = (enrollmentsData.enrollments || []).find(e => e.course_id === courseId);
+      const all = enrollmentsData.enrollments || [];
+
+      /*
+       * Fall back to the parent class's enrolment.
+       *
+       * Students buy a class and study its subjects, so on a subject page there
+       * is no enrolment row for this course id — the access (and its expiry)
+       * belongs to the parent. Looking only at this id would show no countdown
+       * on exactly the pages where students spend their time.
+       */
+      const mine =
+        all.find((e) => e.course_id === courseId) ||
+        (courseRecord?.parent_course_id
+          ? all.find((e) => e.course_id === courseRecord.parent_course_id)
+          : null);
+
       setCourseProgress(mine ? mine.progress : 0);
+      setAccessExpiresAt(mine?.expires_at || null);
     } catch (err) {
       console.error('Failed to load progress', err);
     }
@@ -309,6 +328,61 @@ export default function CourseDetailPage() {
           </div>
         </div>
       </div>
+
+      {/*
+        Remaining access, shown where the student is actually working rather
+        than only back on My Learning. Placed above the curriculum so it is
+        read before they start, not discovered when something stops opening.
+      */}
+      {isEnrolled && !isCreator && (() => {
+        // Lifetime access gets its own line rather than an absent one.
+        if (!accessExpiresAt) {
+          return (
+            <div className="flex items-center gap-2 mb-6 px-4 py-3 border-2 border-black rounded-xl font-bold bg-[#A7E2D1] shadow-[3px_3px_0px_0px_#111]">
+              <InfinityIcon size={16} strokeWidth={3} className="shrink-0" />
+              <span className="text-sm">Lifetime access — this course never expires.</span>
+            </div>
+          );
+        }
+
+        const expires = new Date(accessExpiresAt);
+        const msLeft = expires - new Date();
+        const daysLeft = Math.ceil(msLeft / 86400000);
+        const expired = msLeft <= 0;
+
+        // Days are the useful unit near the end; months read better far out.
+        const remaining =
+          daysLeft > 60
+            ? `${Math.round(daysLeft / 30)} months left`
+            : `${daysLeft} day${daysLeft === 1 ? '' : 's'} left`;
+
+        return (
+          <div
+            className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-6 px-4 py-3 border-2 border-black rounded-xl font-bold shadow-[3px_3px_0px_0px_#111] ${
+              expired
+                ? 'bg-[#F26B4D] text-white'
+                : daysLeft <= 14
+                ? 'bg-[#F9E076]'
+                : 'bg-white'
+            }`}
+          >
+            <span className="text-sm">
+              {expired
+                ? `Your access ended on ${expires.toLocaleDateString()}.`
+                : `${remaining} — access until ${expires.toLocaleDateString()}.`}
+            </span>
+            {expired && (
+              <button
+                onClick={handleEnroll}
+                disabled={isEnrolling}
+                className="shrink-0 h-9 px-4 bg-white text-black border-2 border-black rounded-lg text-sm font-bold hover:bg-[#F9E076] transition-colors disabled:opacity-60"
+              >
+                {isEnrolling ? 'Processing...' : 'Renew access'}
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="flex items-center justify-between mb-8 gap-6">
         <h2 className="text-3xl font-black">Curriculum</h2>
