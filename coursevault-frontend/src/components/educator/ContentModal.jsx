@@ -2,10 +2,16 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, UploadCloud, Video, FileText, CheckCircle2, AlertTriangle, Film } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { BASE_URL, uploadVideoWithProgress } from '../../services/api.js';
+import { uploadVideoChunked } from '../../services/chunkedUpload.js';
 import { formatSize } from '../../utils/format.js';
 
 const MAX_VIDEO_BYTES = 3 * 1024 * 1024 * 1024; // matches the backend's videoUpload limit
 const MAX_FILE_BYTES = 50 * 1024 * 1024;        // matches the backend's memory upload limit
+
+// Above this a single POST is a liability: one dropped connection loses the
+// lot. Below it the chunk bookkeeping costs more than it saves.
+const CHUNKED_THRESHOLD = 50 * 1024 * 1024;
+
 
 export default function ContentModal({ isOpen, onClose, moduleId, folderId, onSave, initialTab = 'video' }) {
   const isVideo = initialTab === 'video';
@@ -84,12 +90,22 @@ export default function ContentModal({ isOpen, onClose, moduleId, folderId, onSa
 
     try {
       if (isVideo) {
-        // XHR, not fetch: fetch cannot report upload progress, and a multi-
-        // gigabyte video with no feedback is indistinguishable from a hang.
-        await uploadVideoWithProgress(moduleId, file, title, description, setProgress, {
-          preview,
-          folderId,
-        });
+        if (file.size >= CHUNKED_THRESHOLD) {
+          // Chunked: survives a dropped connection, retries only the failed
+          // piece, and sends several pieces at once.
+          await uploadVideoChunked(
+            file,
+            { moduleId, title, description, preview, folderId },
+            setProgress
+          );
+        } else {
+          // XHR, not fetch: fetch cannot report upload progress, and a multi-
+          // gigabyte video with no feedback is indistinguishable from a hang.
+          await uploadVideoWithProgress(moduleId, file, title, description, setProgress, {
+            preview,
+            folderId,
+          });
+        }
       } else {
         const formData = new FormData();
         formData.append('title', title);

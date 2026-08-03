@@ -9,7 +9,7 @@ import fs from "fs";
 import authRoutes from "./routes/auth.js";
 import courseRoutes from "./routes/courses.js";
 import moduleRoutes from "./routes/modules.js";
-import contentRoutes from "./routes/content.js";
+import contentRoutes, { recoverInterruptedJobs } from "./routes/content.js";
 import paymentRoutes from "./routes/payments.js";
 import enrollmentRoutes from "./routes/enrollments.js";
 import videoRoutes from "./routes/video.js";
@@ -316,7 +316,11 @@ async function setupDatabase() {
     }
 }
 
-setupDatabase();
+setupDatabase()
+    // Only after the schema is in place: the recovery reads content_items and
+    // would race the migrations on a first boot.
+    .then(() => recoverInterruptedJobs())
+    .catch((err) => console.error("Startup tasks failed:", err));
 
 // ============================================
 // CORS Middleware (MUST BE FIRST!)

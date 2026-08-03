@@ -6,6 +6,8 @@ import { fetchAPI } from '../../services/api.js';
 export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
+  // Set when the video was stored as a plain MP4 rather than transcoded.
+  const [isProgressive, setIsProgressive] = useState(false);
   const [error, setError] = useState(null);
 
   const videoRef = useRef(null);
@@ -57,12 +59,19 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
         // 🚀 Handle Processing States vs Ready HLS Playback URLs
         if (streamData.status === 'processing') {
           setError('Video is still processing and transcoding. Please check back in a moment!');
-        } else if (streamData.hlsUrl) {
+        } else if (streamData.mp4Url || streamData.hlsUrl) {
           const token = localStorage.getItem('token');
           const backendDomain = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
             ? import.meta.env.VITE_API_URL.replace('/api', '')
             : 'http://localhost:3000';
-          setStreamUrl(`${backendDomain}${streamData.hlsUrl}&token=${token}`);
+
+          if (streamData.mp4Url) {
+            setIsProgressive(true);
+            setStreamUrl(`${backendDomain}${streamData.mp4Url}?token=${token}`);
+          } else {
+            setIsProgressive(false);
+            setStreamUrl(`${backendDomain}${streamData.hlsUrl}&token=${token}`);
+          }
         } else {
           setError(streamData.message || 'Video processing has not completed yet.');
         }
@@ -82,11 +91,24 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
     if (!streamUrl || !videoRef.current) return;
 
     const videoEl = videoRef.current;
-    
+
     const syncTime = () => {
       currentPosRef.current = videoEl.currentTime;
     };
     videoEl.addEventListener('timeupdate', syncTime);
+
+    // Plain MP4: native playback. HLS.js would find no manifest here.
+    if (isProgressive) {
+      videoEl.src = streamUrl;
+      const seekOnce = () => {
+        if (savedPosition > 0) videoEl.currentTime = savedPosition;
+      };
+      videoEl.addEventListener('loadedmetadata', seekOnce);
+      return () => {
+        videoEl.removeEventListener('timeupdate', syncTime);
+        videoEl.removeEventListener('loadedmetadata', seekOnce);
+      };
+    }
 
     const applyInitialSeek = () => {
       if (savedPositionRef.current > 0) {
@@ -118,7 +140,7 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
         videoEl.removeEventListener('loadedmetadata', applyInitialSeek);
       };
     }
-  }, [streamUrl]);
+  }, [streamUrl, isProgressive]);
 
   // 3. Progress Sync Loop + Reliable Unmount Tracking
   useEffect(() => {

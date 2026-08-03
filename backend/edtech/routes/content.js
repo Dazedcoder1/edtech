@@ -5,7 +5,16 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
-import { PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+    PutObjectCommand,
+    GetObjectCommand,
+    DeleteObjectCommand,
+    CreateMultipartUploadCommand,
+    UploadPartCommand,
+    CompleteMultipartUploadCommand,
+    AbortMultipartUploadCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
 import authMiddleware from "../middleware/auth.js";
@@ -101,6 +110,34 @@ async function resolveExistingByHash(db, fileHash, fields = {}) {
 
     return { row: revived.rows[0], revived: true };
 }
+
+/**
+ * One output quality, not a ladder.
+ *
+ * Encoding three renditions costs three times the CPU, and for recorded
+ * lectures the adaptive switching that buys is rarely worth it: the content is
+ * mostly static slides and a talking head, so a single well-chosen rung looks
+ * fine on a phone and a laptop alike.
+ *
+ * The trade-off is real though — a student on a weak connection can no longer
+ * drop to a smaller stream, they just buffer. 720p is the balance point for
+ * lecture material: text on slides stays legible, which 480p does not always
+ * manage.
+ *
+ * Set VIDEO_QUALITY=480p in .env to halve the bitrate again.
+ */
+const RENDITION_PRESETS = {
+    "480p":  { name: "480p",  scale: "854:480",   bitrate: "1000k" },
+    "720p":  { name: "720p",  scale: "1280:720",  bitrate: "2500k" },
+    "1080p": { name: "1080p", scale: "1920:1080", bitrate: "4500k" },
+};
+
+const VIDEO_RENDITIONS = [
+    RENDITION_PRESETS[(process.env.VIDEO_QUALITY || "720p").toLowerCase()] ||
+    RENDITION_PRESETS["720p"],
+];
+
+console.log(`🎥 Video output: single ${VIDEO_RENDITIONS[0].name} rendition`);
 
 const activeJobs = new Map();
 
@@ -263,11 +300,7 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
             `, [contentId, moduleId]);
         }
         
-        transcodeVideo(contentId, tempFilePath, fileHash, title, [
-            { name: "480p", scale: "854:480", bitrate: "1000k" },
-            { name: "720p", scale: "1280:720", bitrate: "2500k" },
-            { name: "1080p", scale: "1920:1080", bitrate: "4500k" }
-        ], 0);
+        transcodeVideo(contentId, tempFilePath, fileHash, title, VIDEO_RENDITIONS, 0);
 
         res.status(202).json({ success: true, message: "Video uploaded. Processing in background.", content: { id: contentId, title, content_type: "video", status: "processing" } });
     } catch (err) {
@@ -372,6 +405,469 @@ router.get("/stream-image", async (req, res) => {
         res.status(500).json({ error: "Failed to load image", details: err.message });
     }
 });
+
+// ============================================================
+// CHUNKED UPLOAD (large videos, straight to this server)
+// ============================================================
+//
+// One 3GB POST is fragile and unhelpful: a dropped connection at 90% loses
+// everything, a proxy or body limit anywhere in the chain kills it outright,
+// and a single TCP stream rarely saturates the uplink.
+//
+// Splitting it up fixes all three. Each chunk is an ordinary small POST, so
+// nothing in the chain objects; a failed chunk retries on its own; and several
+// can be in flight at once, which usually raises the achieved throughput
+// because the limit is typically per-connection rather than per-link.
+//
+// Chunks land as separate files and are joined at the end, so they may arrive
+// in any order — that is what makes parallel upload possible without the
+// server having to buffer or reorder anything.
+
+const CHUNK_DIR = path.join(TEMP_VIDEO_DIR, "chunks");
+if (!fs.existsSync(CHUNK_DIR)) fs.mkdirSync(CHUNK_DIR, { recursive: true });
+
+// Generous ceiling; the client picks the real size.
+const chunkUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 32 * 1024 * 1024 },
+});
+
+/**
+ * Where one upload's parts live.
+ *
+ * Namespaced by user and validated as a UUID: the id arrives from the client,
+ * and without both of those a crafted value could write outside this directory
+ * or into someone else's upload.
+ */
+function chunkDirFor(userId, uploadId) {
+    if (!/^[0-9a-fA-F-]{36}$/.test(String(uploadId))) {
+        throw new Error("Invalid uploadId");
+    }
+    return path.join(CHUNK_DIR, String(userId), String(uploadId));
+}
+
+// POST /api/content/upload-chunk
+router.post("/upload-chunk", authMiddleware, chunkUpload.single("chunk"), async (req, res) => {
+    try {
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload videos" });
+        }
+
+        const { uploadId, index } = req.body;
+        const chunkIndex = Number(index);
+
+        if (!req.file) return res.status(400).json({ error: "No chunk received" });
+        if (!Number.isInteger(chunkIndex) || chunkIndex < 0) {
+            return res.status(400).json({ error: "A numeric chunk index is required" });
+        }
+
+        const dir = chunkDirFor(req.user.id, uploadId);
+        fs.mkdirSync(dir, { recursive: true });
+
+        // Written under a temp name and renamed, so a half-written chunk from a
+        // dropped connection is never mistaken for a complete one on retry.
+        const finalPath = path.join(dir, `${chunkIndex}.part`);
+        const tempPath = `${finalPath}.incoming`;
+        fs.writeFileSync(tempPath, req.file.buffer);
+        fs.renameSync(tempPath, finalPath);
+
+        res.json({ success: true, index: chunkIndex, size: req.file.buffer.length });
+    } catch (err) {
+        console.error("upload-chunk error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/content/upload-status/:uploadId — which chunks already arrived.
+// Lets a resumed upload skip what it already sent.
+router.get("/upload-status/:uploadId", authMiddleware, async (req, res) => {
+    try {
+        const dir = chunkDirFor(req.user.id, req.params.uploadId);
+        if (!fs.existsSync(dir)) return res.json({ success: true, received: [] });
+
+        const received = fs.readdirSync(dir)
+            .filter((f) => f.endsWith(".part"))
+            .map((f) => parseInt(f, 10))
+            .filter((n) => Number.isInteger(n));
+
+        res.json({ success: true, received });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// POST /api/content/upload-finish — join the chunks and start processing.
+router.post("/upload-finish", authMiddleware, async (req, res) => {
+    let assembledPath = null;
+    try {
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload videos" });
+        }
+
+        const { uploadId, totalChunks, fileName, title, description, preview, moduleId, folderId } = req.body;
+        const expected = Number(totalChunks);
+        const userId = req.user.id;
+
+        if (!title) return res.status(400).json({ error: "title is required" });
+        if (!Number.isInteger(expected) || expected < 1) {
+            return res.status(400).json({ error: "totalChunks is required" });
+        }
+
+        const dir = chunkDirFor(userId, uploadId);
+        if (!fs.existsSync(dir)) return res.status(400).json({ error: "No chunks found for this upload" });
+
+        // Refuse to assemble a file with holes in it rather than producing a
+        // corrupt video that fails much later in ffmpeg.
+        const missing = [];
+        for (let i = 0; i < expected; i++) {
+            if (!fs.existsSync(path.join(dir, `${i}.part`))) missing.push(i);
+        }
+        if (missing.length > 0) {
+            return res.status(400).json({
+                error: `Upload incomplete — ${missing.length} chunk(s) missing.`,
+                missing: missing.slice(0, 20),
+            });
+        }
+
+        assembledPath = path.join(TEMP_VIDEO_DIR, `assembled_${uploadId}${getFileExtension(fileName || ".mp4")}`);
+
+        // Streamed append: concatenating 3GB through Buffers would blow the heap.
+        await new Promise((resolve, reject) => {
+            const out = fs.createWriteStream(assembledPath);
+            out.on("error", reject);
+            out.on("finish", resolve);
+
+            let i = 0;
+            const next = () => {
+                if (i >= expected) { out.end(); return; }
+                const part = fs.createReadStream(path.join(dir, `${i}.part`));
+                part.on("error", reject);
+                part.on("end", () => { i++; next(); });
+                part.pipe(out, { end: false });
+            };
+            next();
+        });
+
+        fs.rmSync(dir, { recursive: true, force: true });
+
+        const fileHash = await hashFileFromDisk(assembledPath);
+        const stats = fs.statSync(assembledPath);
+
+        // An identical video already processed needs no second encode.
+        const existingResolved = await resolveExistingByHash(pool, fileHash, { title, description });
+        if (existingResolved && existingResolved.row.status === 'ready') {
+            fs.unlinkSync(assembledPath);
+            const contentId = existingResolved.row.id;
+            if (moduleId) {
+                await pool.query(`
+                    UPDATE modules SET content_ids = array_append(content_ids, $1::uuid)
+                    WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
+                `, [contentId, moduleId]);
+            }
+            return res.status(200).json({ success: true, isDuplicate: true, content: existingResolved.row });
+        }
+
+        const finalPath = path.join(TEMP_VIDEO_DIR, `${fileHash}${getFileExtension(fileName || ".mp4")}`);
+        fs.renameSync(assembledPath, finalPath);
+        assembledPath = null;
+
+        const inserted = await pool.query(`
+            INSERT INTO content_items (
+                title, description, content_type, file_hash, file_name,
+                file_size_bytes, mime_type, status, preview, created_by
+            ) VALUES ($1, $2, 'video', $3, $4, $5, 'video/mp4', 'processing', $6, $7)
+            RETURNING id
+        `, [
+            title, description || "", fileHash, fileName || null, stats.size,
+            preview === true || preview === 'true', userId,
+        ]);
+
+        const contentId = inserted.rows[0].id;
+
+        if (moduleId) {
+            await pool.query(`
+                UPDATE modules SET content_ids = array_append(content_ids, $1::uuid)
+                WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
+            `, [contentId, moduleId]);
+        }
+        if (folderId) {
+            await pool.query(`UPDATE content_items SET folder_id = $1 WHERE id = $2`, [folderId, contentId]);
+        }
+
+        res.status(202).json({
+            success: true,
+            message: "Upload complete. Processing in background.",
+            content: { id: contentId, title, content_type: "video", status: "processing" },
+        });
+
+        transcodeVideo(contentId, finalPath, fileHash, title, VIDEO_RENDITIONS, 0)
+            .catch((err) => console.error("Transcode failed:", err.message));
+    } catch (err) {
+        console.error("upload-finish error:", err);
+        if (assembledPath && fs.existsSync(assembledPath)) fs.unlinkSync(assembledPath);
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/content/upload-cancel — drop a part-finished upload's chunks.
+router.post("/upload-cancel", authMiddleware, async (req, res) => {
+    try {
+        const dir = chunkDirFor(req.user.id, req.body.uploadId);
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// DIRECT-TO-R2 MULTIPART UPLOAD (large videos)
+// ============================================================
+//
+// The ordinary /upload-video route sends the file to this server first, which
+// writes it to disk and only then pushes it onward. Every byte of a 3GB file
+// therefore crosses the network twice and is limited by this one machine's
+// inbound bandwidth.
+//
+// Here the browser talks straight to R2 using presigned URLs, in parts, several
+// at once. That removes the middle hop entirely and — because a single TCP
+// stream rarely saturates a home connection — parallel parts typically multiply
+// the achieved throughput as well. A failed part retries on its own instead of
+// restarting the whole file.
+//
+// Requires CORS on the R2 bucket allowing PUT from the app's origin and
+// exposing the ETag header; without ExposeHeaders the browser cannot read the
+// part ETags and the upload cannot be completed.
+
+const MULTIPART_PART_SIZE = 64 * 1024 * 1024; // R2 minimum is 5MB; 64MB keeps the part count sane for 3GB
+const MULTIPART_MAX_PARTS = 10000;            // S3/R2 hard limit
+
+// POST /api/content/upload-init
+router.post("/upload-init", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload videos" });
+        }
+
+        const { fileName, fileSize, mimeType } = req.body;
+        const size = Number(fileSize);
+
+        if (!fileName || !Number.isFinite(size) || size <= 0) {
+            return res.status(400).json({ error: "fileName and a positive fileSize are required" });
+        }
+        if (size > 3 * 1024 * 1024 * 1024) {
+            return res.status(413).json({ error: "Videos must be 3GB or smaller." });
+        }
+        if (mimeType && !String(mimeType).startsWith("video/")) {
+            return res.status(400).json({ error: "That file is not a video." });
+        }
+
+        const partCount = Math.ceil(size / MULTIPART_PART_SIZE);
+        if (partCount > MULTIPART_MAX_PARTS) {
+            return res.status(413).json({ error: "File is too large to upload in parts." });
+        }
+
+        // Random key: the content hash is not known until the bytes exist, and
+        // hashing 3GB in the browser before uploading would cost more than it
+        // saves. The row is keyed by hash later, once the server has the file.
+        const key = `uploads/raw/${crypto.randomUUID()}${getFileExtension(fileName)}`;
+
+        const created = await r2Client.send(new CreateMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            ContentType: mimeType || "video/mp4",
+        }));
+
+        // Presigned up front so the browser never has to come back mid-upload.
+        // Six hours covers a slow connection pushing 3GB.
+        const urls = [];
+        for (let partNumber = 1; partNumber <= partCount; partNumber++) {
+            urls.push(await getSignedUrl(
+                r2Client,
+                new UploadPartCommand({
+                    Bucket: R2_BUCKET_NAME,
+                    Key: key,
+                    UploadId: created.UploadId,
+                    PartNumber: partNumber,
+                }),
+                { expiresIn: 6 * 60 * 60 }
+            ));
+        }
+
+        res.json({
+            success: true,
+            key,
+            uploadId: created.UploadId,
+            partSize: MULTIPART_PART_SIZE,
+            urls,
+        });
+    } catch (err) {
+        console.error("upload-init error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/content/upload-complete
+router.post("/upload-complete", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'educator' && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only educators can upload videos" });
+        }
+
+        const { key, uploadId, parts, moduleId, title, description, preview, folderId, fileName, fileSize } =
+            req.body;
+        const userId = req.user.id || req.user.userId || req.user.sub;
+
+        if (!key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
+            return res.status(400).json({ error: "key, uploadId and parts are required" });
+        }
+        if (!title) return res.status(400).json({ error: "title is required" });
+
+        await r2Client.send(new CompleteMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            MultipartUpload: {
+                // R2 rejects out-of-order parts, and the browser finishes them
+                // in whatever order the network allows.
+                Parts: [...parts]
+                    .map((p) => ({ ETag: p.ETag, PartNumber: Number(p.PartNumber) }))
+                    .sort((a, b) => a.PartNumber - b.PartNumber),
+            },
+        }));
+
+        // file_hash is filled in by the background job, which has to read the
+        // whole object anyway to transcode it. NULL is allowed by the UNIQUE
+        // index (Postgres permits many NULLs), so duplicate detection simply
+        // starts working once the hash is known.
+        const inserted = await pool.query(`
+            INSERT INTO content_items (
+                title, description, content_type, file_name, file_size_bytes,
+                mime_type, status, preview, created_by
+            ) VALUES ($1, $2, 'video', $3, $4, $5, 'processing', $6, $7)
+            RETURNING id
+        `, [
+            title,
+            description || "",
+            fileName || null,
+            Number(fileSize) || null,
+            "video/mp4",
+            preview === true || preview === 'true',
+            userId,
+        ]);
+
+        const contentId = inserted.rows[0].id;
+
+        if (moduleId) {
+            await pool.query(`
+                UPDATE modules
+                SET content_ids = array_append(content_ids, $1::uuid)
+                WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
+            `, [contentId, moduleId]);
+        }
+
+        if (folderId) {
+            await pool.query(`UPDATE content_items SET folder_id = $1 WHERE id = $2`, [folderId, contentId]);
+        }
+
+        // Answer immediately; the fetch-and-transcode runs behind it.
+        res.status(202).json({
+            success: true,
+            message: "Upload complete. Processing in background.",
+            content: { id: contentId, title, content_type: "video", status: "processing" },
+        });
+
+        processUploadedObject(contentId, key, title).catch((err) => {
+            console.error("Background processing failed:", err);
+        });
+    } catch (err) {
+        console.error("upload-complete error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /api/content/upload-abort — tidy up a cancelled upload.
+router.post("/upload-abort", authMiddleware, async (req, res) => {
+    try {
+        const { key, uploadId } = req.body;
+        if (!key || !uploadId) return res.status(400).json({ error: "key and uploadId are required" });
+
+        await r2Client.send(new AbortMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+        }));
+        res.json({ success: true });
+    } catch (err) {
+        // Abort is best-effort; R2 lifecycle rules clean up orphans anyway.
+        console.warn("upload-abort:", err.message);
+        res.json({ success: true, warning: err.message });
+    }
+});
+
+/**
+ * Pull the uploaded object down and run it through the existing pipeline.
+ *
+ * Streamed to disk rather than buffered: a 3GB Buffer would exhaust the heap.
+ * This hop is server-to-R2 inside a datacentre, so it is far quicker than the
+ * educator's uplink, and it happens after the browser is already finished.
+ */
+async function processUploadedObject(contentId, key, title) {
+    const localPath = path.join(TEMP_VIDEO_DIR, `direct_${contentId}${path.extname(key)}`);
+
+    try {
+        const obj = await r2Client.send(new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key }));
+
+        await new Promise((resolve, reject) => {
+            const out = fs.createWriteStream(localPath);
+            obj.Body.pipe(out);
+            obj.Body.on("error", reject);
+            out.on("error", reject);
+            out.on("finish", resolve);
+        });
+
+        const fileHash = await hashFileFromDisk(localPath);
+
+        // A real duplicate means the bytes are already stored and transcoded;
+        // point this row at the existing output instead of encoding again.
+        const existing = await pool.query(
+            `SELECT id, r2_key, metadata, duration_seconds FROM content_items
+              WHERE file_hash = $1 AND id <> $2 AND status = 'ready' LIMIT 1`,
+            [fileHash, contentId]
+        );
+
+        if (existing.rows.length > 0) {
+            const src = existing.rows[0];
+            await pool.query(`
+                UPDATE content_items
+                SET status = 'ready', r2_key = $1, metadata = $2, duration_seconds = $3, updated_at = NOW()
+                WHERE id = $4
+            `, [src.r2_key, src.metadata, src.duration_seconds, contentId]);
+
+            fs.unlinkSync(localPath);
+            await r2Client.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })).catch(() => {});
+            console.log(`♻️  ${contentId} reused an identical existing video`);
+            return;
+        }
+
+        await pool.query(
+            `UPDATE content_items SET file_hash = $1, file_size_bytes = $2 WHERE id = $3`,
+            [fileHash, fs.statSync(localPath).size, contentId]
+        );
+
+        await transcodeVideo(contentId, localPath, fileHash, title, VIDEO_RENDITIONS, 0);
+
+        // The raw upload is redundant once HLS segments exist.
+        await r2Client.send(new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key })).catch(() => {});
+    } catch (err) {
+        console.error(`Direct-upload processing failed for ${contentId}:`, err.message);
+        await pool.query(
+            `UPDATE content_items SET status = 'failed', metadata = $1, updated_at = NOW() WHERE id = $2`,
+            [{ error: err.message, failed_at: new Date().toISOString() }, contentId]
+        );
+        if (fs.existsSync(localPath)) fs.unlinkSync(localPath);
+    }
+}
 
 // GET /api/content
 router.get("/", async (req, res) => {
@@ -672,6 +1168,90 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
 // ============================================
 // ⭐ GET /api/content/:id/stream
 // ============================================
+/**
+ * GET /api/content/:id/file — progressive MP4 with range support.
+ *
+ * Range handling is not optional here: without it the browser must download
+ * the whole file before it can play, and the seek bar does nothing. With it,
+ * playback starts immediately and dragging the scrubber fetches only the bytes
+ * around that point — which is most of what HLS was buying us.
+ *
+ * Authenticated via ?token= as well as the header, because a <video src> tag
+ * cannot set headers.
+ */
+router.get("/:id/file", authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id || req.user.userId || req.user.sub;
+
+        const result = await pool.query(
+            `SELECT * FROM content_items WHERE id = $1 AND is_active = true`, [id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: "Content not found" });
+        const content = result.rows[0];
+
+        const courseCheck = await pool.query(`
+            SELECT c.educator_id, c.id as course_id, c.is_active AS course_is_active
+            FROM courses c JOIN modules m ON m.course_id = c.id
+            WHERE $1::uuid = ANY(m.content_ids) LIMIT 1
+        `, [id]);
+
+        const educatorId = courseCheck.rows[0]?.educator_id ?? null;
+        const isOwner =
+            (content.created_by && String(content.created_by).toLowerCase() === String(userId).toLowerCase()) ||
+            (educatorId && String(educatorId).toLowerCase() === String(userId).toLowerCase()) ||
+            req.user.role === 'admin';
+
+        if (courseCheck.rows[0]?.course_is_active === false && !isOwner) {
+            return res.status(403).json({ error: "This course is no longer available." });
+        }
+
+        if (!isOwner) {
+            const courseIdToCheck = req.query.courseId || courseCheck.rows[0]?.course_id || null;
+            if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
+
+            const enrolled = await pool.query(
+                `SELECT 1 FROM enrollments
+                  WHERE user_id = $1
+                    AND ${activeEnrolmentSql('')}
+                    AND course_id IN (
+                        SELECT $2::uuid
+                        UNION
+                        SELECT parent_course_id FROM courses
+                         WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                    )`,
+                [userId, courseIdToCheck]
+            );
+            if (enrolled.rows.length === 0 && !content.preview) {
+                return res.status(403).json({ error: "Access denied. You are not enrolled." });
+            }
+        }
+
+        if (!content.r2_key) return res.status(404).json({ error: "Video not found" });
+
+        // Pass the browser's Range straight through to R2 so only the needed
+        // bytes are ever fetched — this is what makes seeking cheap.
+        const range = req.headers.range;
+        const obj = await r2Client.send(new GetObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: content.r2_key,
+            ...(range ? { Range: range } : {}),
+        }));
+
+        res.setHeader("Content-Type", "video/mp4");
+        res.setHeader("Accept-Ranges", "bytes");
+        if (obj.ContentLength != null) res.setHeader("Content-Length", obj.ContentLength);
+        if (obj.ContentRange) res.setHeader("Content-Range", obj.ContentRange);
+
+        res.status(range && obj.ContentRange ? 206 : 200);
+        obj.Body.pipe(res);
+    } catch (err) {
+        if (err.name === "InvalidRange") return res.status(416).end();
+        console.error("File stream error:", err.message);
+        if (!res.headersSent) res.status(500).json({ error: "Failed to stream video" });
+    }
+});
+
 router.get("/:id/stream", authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
@@ -749,6 +1329,17 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
         }
         
         if (!content.r2_key) return res.status(404).json({ error: "Video manifest not found" });
+
+        // A directly-stored MP4 has no manifest to point at; the player gets a
+        // progressive URL instead and uses native playback.
+        if (content.metadata?.direct) {
+            return res.json({
+                success: true,
+                mp4Url: `/api/content/${id}/file`,
+                duration: content.duration_seconds,
+                accessType: isOwner ? 'creator' : 'enrolled'
+            });
+        }
 
         res.json({
             success: true,
@@ -906,7 +1497,52 @@ async function runWithConcurrency(items, limit, worker) {
     if (failure) throw failure;
 }
 
-const UPLOAD_CONCURRENCY = 8;
+// Eight parallel PUTs was greedy enough to provoke connection resets against
+// R2 on a home connection. Four still keeps the link busy.
+const UPLOAD_CONCURRENCY = 4;
+
+/**
+ * Send one object to R2, retrying transient network failures.
+ *
+ * "socket hang up" is a dropped connection, not a bad request — and the SDK's
+ * own retries could not help, because the body was a read stream that had
+ * already been consumed by the failed attempt. A Buffer can be sent again, so
+ * this reads the segment into memory first; HLS segments are a few megabytes,
+ * which is a cheap price for being able to retry at all.
+ */
+async function putObjectWithRetry(key, filePath, contentType, attempts = 4) {
+    let lastError;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            const body = fs.readFileSync(filePath);
+            await r2Client.send(new PutObjectCommand({
+                Bucket: R2_BUCKET_NAME,
+                Key: key,
+                Body: body,
+                ContentLength: body.length,
+                ContentType: contentType,
+            }));
+            return;
+        } catch (err) {
+            lastError = err;
+
+            // A rejected request will be rejected again; only retry the ones
+            // that look like the connection rather than the content.
+            const transient =
+                /socket hang up|ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND|EAI_AGAIN|timeout|network/i
+                    .test(err.message || "") || err.name === "TimeoutError";
+
+            if (!transient || attempt === attempts) throw err;
+
+            const waitMs = 500 * 2 ** (attempt - 1); // 0.5s, 1s, 2s
+            console.warn(`   ↻ ${key} failed (${err.message}); retry ${attempt}/${attempts - 1} in ${waitMs}ms`);
+            await new Promise((r) => setTimeout(r, waitMs));
+        }
+    }
+
+    throw lastError;
+}
 
 /**
  * Probe the source so renditions can be chosen from it.
@@ -919,10 +1555,12 @@ async function probeVideo(inputPath) {
         let stdout = "";
         let probe;
         try {
+            // Codec names matter as much as the dimensions: an H.264/AAC
+            // source can be remuxed into HLS instead of re-encoded, which is
+            // roughly 30x faster because no pixels are touched.
             probe = spawn(FFPROBE_PATH, [
                 "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height",
+                "-show_entries", "stream=codec_type,codec_name,width,height",
                 "-show_entries", "format=duration",
                 "-of", "json",
                 inputPath
@@ -936,9 +1574,21 @@ async function probeVideo(inputPath) {
         probe.on("close", () => {
             try {
                 const parsed = JSON.parse(stdout);
-                const height = parsed.streams?.[0]?.height ?? null;
-                const duration = Math.round(parseFloat(parsed.format?.duration)) || null;
-                resolve({ height, duration, ok: true });
+                const streams = parsed.streams || [];
+                const video = streams.find((s) => s.codec_type === "video");
+                const audio = streams.find((s) => s.codec_type === "audio");
+
+                resolve({
+                    width: video?.width ?? null,
+                    height: video?.height ?? null,
+                    duration: Math.round(parseFloat(parsed.format?.duration)) || null,
+                    videoCodec: video?.codec_name ?? null,
+                    // No audio track at all is fine to copy; only a foreign
+                    // codec forces a re-encode.
+                    audioCodec: audio ? audio.codec_name : null,
+                    hasAudio: Boolean(audio),
+                    ok: true,
+                });
             } catch (_) {
                 resolve({ height: null, duration: null, ok: false });
             }
@@ -949,6 +1599,122 @@ async function probeVideo(inputPath) {
 // ============================================
 // TRANSCODE FUNCTION
 // ============================================
+/**
+ * Store a browser-playable file as-is instead of transcoding it.
+ *
+ * HLS exists to allow mid-playback quality switching. That is worth its cost
+ * for a streaming service; for recorded lectures it means every upload waits
+ * minutes to be decoded and re-encoded into hundreds of segments, when the
+ * file the educator already has plays natively in every browser.
+ *
+ * An H.264/AAC MP4 needs none of that. Uploading it once and serving it with
+ * byte-range requests gives immediate playback and working seek, and reduces
+ * processing to a single upload — seconds rather than minutes.
+ *
+ * @returns {Promise<boolean>} true when handled, false to fall through to HLS
+ */
+async function storeDirectly(contentId, inputPath, fileHash, probe) {
+    const playable =
+        probe.videoCodec === "h264" && (!probe.hasAudio || probe.audioCodec === "aac");
+
+    if (!playable) return false;
+
+    const key = `content/videos/${fileHash.slice(0, 6)}/${fileHash}.mp4`;
+
+    console.log(`⚡ ${contentId}: already browser-playable — storing as-is, no transcode`);
+
+    // Multipart: a single PutObject of a multi-gigabyte Buffer would exhaust
+    // the heap, and this way a dropped connection retries one part.
+    const created = await r2Client.send(new CreateMultipartUploadCommand({
+        Bucket: R2_BUCKET_NAME,
+        Key: key,
+        ContentType: "video/mp4",
+    }));
+
+    const PART = 16 * 1024 * 1024;
+    const size = fs.statSync(inputPath).size;
+    const parts = [];
+
+    try {
+        const fd = fs.openSync(inputPath, "r");
+        try {
+            let partNumber = 1;
+            for (let offset = 0; offset < size; offset += PART) {
+                const length = Math.min(PART, size - offset);
+                const buffer = Buffer.allocUnsafe(length);
+                fs.readSync(fd, buffer, 0, length, offset);
+
+                let uploaded = null;
+                for (let attempt = 1; attempt <= 4 && !uploaded; attempt++) {
+                    try {
+                        uploaded = await r2Client.send(new UploadPartCommand({
+                            Bucket: R2_BUCKET_NAME,
+                            Key: key,
+                            UploadId: created.UploadId,
+                            PartNumber: partNumber,
+                            Body: buffer, // a Buffer can be re-sent; a stream cannot
+                        }));
+                    } catch (err) {
+                        if (attempt === 4) throw err;
+                        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+                    }
+                }
+
+                parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
+                const pct = Math.round(((offset + length) / size) * 100);
+
+                const job = activeJobs.get(contentId);
+                if (job) {
+                    job.stage = "storing";
+                    job.percent = pct;
+                    job.renditionsDone = 0;
+                    job.renditionsTotal = 1;
+                }
+                partNumber++;
+            }
+        } finally {
+            fs.closeSync(fd);
+        }
+
+        await r2Client.send(new CompleteMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: created.UploadId,
+            MultipartUpload: { Parts: parts },
+        }));
+    } catch (err) {
+        await r2Client.send(new AbortMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME, Key: key, UploadId: created.UploadId,
+        })).catch(() => {});
+        throw err;
+    }
+
+    await pool.query(`
+        UPDATE content_items
+        SET status = 'ready',
+            r2_key = $1,
+            duration_seconds = $2,
+            metadata = $3,
+            updated_at = NOW()
+        WHERE id = $4::uuid
+    `, [
+        key,
+        probe.duration || null,
+        {
+            // The player uses this to choose progressive playback over HLS.
+            format: "mp4",
+            direct: true,
+            height: probe.height,
+            completed_at: new Date().toISOString(),
+        },
+        contentId,
+    ]);
+
+    activeJobs.delete(contentId);
+    if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+    return true;
+}
+
 async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions, duration) {
     console.log(`\n${"=".repeat(70)}\n🎬 TRANSCODING — ${contentId}\n${"=".repeat(70)}`);
 
@@ -968,6 +1734,19 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         const actualDuration = probe.duration || duration;
 
         /*
+         * The fast path, taken before any encoding decisions are made: if the
+         * file already plays in a browser, none of the work below is needed.
+         * Set FORCE_HLS=true to always transcode instead.
+         */
+        if (process.env.FORCE_HLS !== "true") {
+            const storedDirectly = await storeDirectly(contentId, inputPath, fileHash, probe);
+            if (storedDirectly) {
+                console.log(`✅ ${contentId} ready without transcoding`);
+                return;
+            }
+        }
+
+        /*
          * Never encode above the source resolution.
          *
          * The ladder was applied unconditionally, so a 480p screen recording
@@ -984,8 +1763,54 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
             const fits = resolutions.filter(
                 (r) => parseInt(r.scale.split(":")[1], 10) <= probe.height + 32
             );
-            // Always emit at least one rendition, even for tiny sources.
-            resolutions = fits.length > 0 ? fits : [resolutions[0]];
+
+            if (fits.length > 0) {
+                resolutions = fits;
+            } else {
+                /*
+                 * The source is smaller than the configured target, so encode
+                 * it at its own size rather than upscaling. Upscaling burns CPU
+                 * to invent detail that is not there and produces a file larger
+                 * than the original for no visible gain — and with a single
+                 * rendition there is no taller rung that would justify it.
+                 */
+                const srcWidth = Math.round(((probe.width || probe.height * 16 / 9)) / 2) * 2;
+                const srcHeight = Math.round(probe.height / 2) * 2;
+                resolutions = [{
+                    name: `${srcHeight}p`,
+                    scale: `${srcWidth}:${srcHeight}`,
+                    bitrate: resolutions[0].bitrate,
+                }];
+                console.log(`↧ source is ${probe.height}p — encoding at source size instead of upscaling`);
+            }
+        }
+
+        /*
+         * Remux the top rung instead of re-encoding it, when we can.
+         *
+         * HLS needs H.264 in MPEG-TS. A source that is already H.264 (with AAC
+         * or no audio) at the ladder's top resolution therefore needs no
+         * transcoding at all — only re-packaging into segments, which measured
+         * ~30x faster because no pixels are decoded or encoded.
+         *
+         * It is moved to the front so the video becomes watchable in seconds
+         * at full quality; the smaller rungs then encode behind it for
+         * students on poor connections.
+         */
+        const topRung = resolutions[resolutions.length - 1];
+        const canCopy =
+            Boolean(topRung) &&
+            probe.videoCodec === "h264" &&
+            (!probe.hasAudio || probe.audioCodec === "aac") &&
+            probe.height &&
+            Math.abs(parseInt(topRung.scale.split(":")[1], 10) - probe.height) <= 32;
+
+        if (canCopy) {
+            resolutions = [
+                { ...topRung, copy: true },
+                ...resolutions.slice(0, resolutions.length - 1),
+            ];
+            console.log(`⚡ ${topRung.name} will be stream-copied (source is h264/${probe.audioCodec || 'no audio'})`);
         }
 
         console.log(
@@ -1047,26 +1872,40 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
             ]);
         };
 
-        for (const { name: resName, scale, bitrate } of resolutions) {
+        for (const { name: resName, scale, bitrate, copy: streamCopy } of resolutions) {
             const qualityDir = path.join(outputDir, resName);
             if (!fs.existsSync(qualityDir)) fs.mkdirSync(qualityDir, { recursive: true });
 
             const segmentPattern = path.join(qualityDir, "segment_%03d.ts");
             const playlistPath = path.join(qualityDir, "index.m3u8");
 
-            console.log(`\n🎬 Transcoding ${resName}...`);
+            console.log(`\n🎬 ${streamCopy ? "Remuxing" : "Transcoding"} ${resName}...`);
 
             let lastLoggedFrame = 0;
             await new Promise((resolve, reject) => {
                 let ffmpeg;
                 try {
+                    const encodeArgs = streamCopy
+                        ? [
+                              // No scaling, no codec work — just repackage.
+                              // independent_segments lets a player start on
+                              // any segment, which copy mode does not
+                              // guarantee on its own.
+                              "-i", inputPath,
+                              "-c", "copy",
+                              "-hls_flags", "independent_segments",
+                          ]
+                        : [
+                              "-i", inputPath,
+                              "-vf", `scale=${scale}`,
+                              "-c:v", "libx264", "-preset", "veryfast",
+                              "-b:v", bitrate, "-maxrate", bitrate,
+                              "-bufsize", `${parseInt(bitrate) * 2}k`,
+                              "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+                          ];
+
                     ffmpeg = spawn(FFMPEG_PATH, [
-                        "-i", inputPath,
-                        "-vf", `scale=${scale}`,
-                        "-c:v", "libx264", "-preset", "veryfast",
-                        "-b:v", bitrate, "-maxrate", bitrate,
-                        "-bufsize", `${parseInt(bitrate) * 2}k`,
-                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+                        ...encodeArgs,
                         "-f", "hls",
                         "-hls_time", "10",
                         "-hls_list_size", "0",
@@ -1137,27 +1976,21 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
 
             await runWithConcurrency(segments, UPLOAD_CONCURRENCY, async (seg) => {
                 const filePath = path.join(qualityDir, seg);
-                await r2Client.send(new PutObjectCommand({
-                    Bucket: R2_BUCKET_NAME,
-                    Key: `${r2BasePath}/${resName}/${seg}`,
-                    Body: fs.createReadStream(filePath),
-                    // Given explicitly so the SDK can send a plain sized PUT.
-                    // Without it a stream body is uploaded chunked, which is
-                    // slower and which some S3-compatible endpoints reject.
-                    ContentLength: fs.statSync(filePath).size,
-                    ContentType: "video/mp2t"
-                }));
+                await putObjectWithRetry(
+                    `${r2BasePath}/${resName}/${seg}`,
+                    filePath,
+                    "video/mp2t"
+                );
                 fs.unlinkSync(filePath);
             });
             console.log(`   ☁️  uploaded ${segments.length} ${resName} segments`);
 
             if (fs.existsSync(playlistPath)) {
-                await r2Client.send(new PutObjectCommand({
-                    Bucket: R2_BUCKET_NAME,
-                    Key: `${r2BasePath}/${resName}/index.m3u8`,
-                    Body: fs.createReadStream(playlistPath),
-                    ContentType: "application/vnd.apple.mpegurl"
-                }));
+                await putObjectWithRetry(
+                    `${r2BasePath}/${resName}/index.m3u8`,
+                    playlistPath,
+                    "application/vnd.apple.mpegurl"
+                );
             }
 
             /*
@@ -1228,6 +2061,64 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
         if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
         const od = path.join(TEMP_VIDEO_DIR, `hls_${contentId}`);
         if (fs.existsSync(od)) fs.rmSync(od, { recursive: true, force: true });
+    }
+}
+
+/**
+ * Deal with videos left mid-transcode by a server restart.
+ *
+ * activeJobs is in-memory, so a restart forgets every running job while the
+ * database row stays at 'processing'. Nothing then moves it: the row is hidden
+ * from students, and the educator sees "Queued — starting shortly" forever
+ * because the status endpoint truthfully reports that no job is running.
+ *
+ * The raw upload survives in temp_videos when the machine was not wiped, so
+ * where the source is still on disk the transcode simply restarts. Where it is
+ * gone the row is failed honestly, which at least tells the educator to
+ * re-upload instead of leaving them watching a queue that will never move.
+ */
+export async function recoverInterruptedJobs() {
+    try {
+        const { rows } = await pool.query(`
+            SELECT id, title, file_hash, file_name
+              FROM content_items
+             WHERE content_type = 'video'
+               AND status = 'processing'
+               AND is_active = true
+        `);
+
+        if (rows.length === 0) return;
+        console.log(`\n🔄 ${rows.length} video(s) were left mid-processing by a restart`);
+
+        for (const row of rows) {
+            if (activeJobs.has(row.id)) continue; // already running in this process
+
+            // The upload route renames the source to <hash><ext> before
+            // transcoding, so that is where to look for it.
+            const candidates = row.file_hash
+                ? fs.readdirSync(TEMP_VIDEO_DIR).filter((f) => f.startsWith(row.file_hash))
+                : [];
+
+            if (candidates.length > 0) {
+                const sourcePath = path.join(TEMP_VIDEO_DIR, candidates[0]);
+                console.log(`   ▶ resuming ${row.title}`);
+                transcodeVideo(row.id, sourcePath, row.file_hash, row.title, VIDEO_RENDITIONS, 0).catch((err) => console.error(`   resume failed for ${row.id}:`, err.message));
+            } else {
+                console.log(`   ✖ ${row.title} — source no longer on disk, marking failed`);
+                await pool.query(`
+                    UPDATE content_items
+                    SET status = 'failed',
+                        metadata = $1,
+                        updated_at = NOW()
+                    WHERE id = $2
+                `, [{
+                    error: "Processing was interrupted by a server restart and the uploaded file is no longer available. Please upload it again.",
+                    failed_at: new Date().toISOString(),
+                }, row.id]);
+            }
+        }
+    } catch (err) {
+        console.error("Could not recover interrupted jobs:", err.message);
     }
 }
 

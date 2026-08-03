@@ -6,6 +6,8 @@ import Hls from 'hls.js';
 export default function MediaViewerModal({ content, courseId, isEnrolled, onClose }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
+  // A directly-stored MP4 plays natively; HLS.js must not touch it.
+  const [isProgressive, setIsProgressive] = useState(false);
   const [pdfUrl, setPdfUrl] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [error, setError] = useState(null);
@@ -25,6 +27,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
     let isCancelled = false;
     setLoading(true);
     setStreamUrl(null);
+    setIsProgressive(false);
     setPdfUrl(null);
     setDownloadUrl(null);
     setError(null);
@@ -49,14 +52,21 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           setSavedPosition(initialPos);
           currentPosRef.current = initialPos;
 
-          if (streamData.hlsUrl) {
-            const token = localStorage.getItem('token');
-            const backendDomain = (import.meta && import.meta.env && import.meta.env.VITE_API_URL) 
-              ? import.meta.env.VITE_API_URL.replace('/api', '') 
-              : 'http://localhost:3000';
-            
+          const token = localStorage.getItem('token');
+          const backendDomain = (import.meta && import.meta.env && import.meta.env.VITE_API_URL)
+            ? import.meta.env.VITE_API_URL.replace('/api', '')
+            : 'http://localhost:3000';
+
+          if (streamData.mp4Url) {
+            // Stored without transcoding — the browser plays it directly and
+            // seeks with range requests.
+            setIsProgressive(true);
+            setStreamUrl(`${backendDomain}${streamData.mp4Url}?token=${token}`);
+            setLoading(false);
+          } else if (streamData.hlsUrl) {
+            setIsProgressive(false);
             setStreamUrl(`${backendDomain}${streamData.hlsUrl}&token=${token}`);
-            setLoading(false); 
+            setLoading(false);
           } else {
             throw new Error(streamData.message || 'Video processing is pending.');
           }
@@ -123,6 +133,23 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
     if (!streamUrl || !videoRef.current || !type.includes('video')) return;
 
     const videoEl = videoRef.current;
+
+    // Progressive MP4: assign the source and let the browser do the rest.
+    // Routing it through HLS.js would fail — there is no manifest to parse.
+    if (isProgressive) {
+      videoEl.src = streamUrl;
+      const syncProgressive = () => { currentPosRef.current = videoEl.currentTime; };
+      const seekOnce = () => {
+        if (savedPosition > 0) videoEl.currentTime = savedPosition;
+        videoEl.play().catch(e => console.log("Auto-play blocked:", e));
+      };
+      videoEl.addEventListener('timeupdate', syncProgressive);
+      videoEl.addEventListener('loadedmetadata', seekOnce);
+      return () => {
+        videoEl.removeEventListener('timeupdate', syncProgressive);
+        videoEl.removeEventListener('loadedmetadata', seekOnce);
+      };
+    }
     const syncTime = () => {
       currentPosRef.current = videoEl.currentTime;
     };
@@ -158,7 +185,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
         videoEl.removeEventListener('loadedmetadata', handleMetadata);
       };
     }
-  }, [streamUrl, savedPosition, type]);
+  }, [streamUrl, savedPosition, type, isProgressive]);
 
   useEffect(() => {
     if (!targetContentId || !type.includes('video') || !courseId || !isEnrolled) return;
