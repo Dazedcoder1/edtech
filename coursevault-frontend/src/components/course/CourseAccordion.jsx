@@ -37,10 +37,14 @@ export default function CourseAccordion({
   const [quizzes, setQuizzes] = useState([]);
   const [quizzesLoaded, setQuizzesLoaded] = useState(false);
   const [isQuizModalOpen, setIsQuizModalOpen] = useState(false);
+  // null while creating; a quiz id puts the builder into edit mode.
+  const [editingQuizId, setEditingQuizId] = useState(null);
   const [takingQuizId, setTakingQuizId] = useState(null);
   const [folders, setFolders] = useState([]);
   const [foldersLoaded, setFoldersLoaded] = useState(false);
   const [selectedContentIds, setSelectedContentIds] = useState([]);
+  // contentId -> title, shown until the refetch brings the saved value back.
+  const [titleOverrides, setTitleOverrides] = useState({});
 
   const loadQuizzes = async () => {
     try {
@@ -183,6 +187,51 @@ export default function CourseAccordion({
     }
   };
 
+  /**
+   * Rename a video, PDF or document.
+   *
+   * Titles come from the filename at upload time, so they arrive as things like
+   * "WhatsApp Video 2026-07-23 at 14.02.11" — fine for the uploader, useless to
+   * a student scanning a curriculum.
+   *
+   * The row updates immediately and is corrected from the server afterwards:
+   * waiting on a round trip to see your own typing feels broken, but the
+   * optimistic value must not be trusted if the request fails.
+   */
+  const handleRenameContent = async (e, content) => {
+    e.stopPropagation();
+
+    const current = titleOverrides[content.id] ?? content.title ?? '';
+    const next = window.prompt('Rename this item:', current);
+    if (next === null) return; // cancelled
+
+    const trimmed = next.trim();
+    if (!trimmed) {
+      alert('The title cannot be empty.');
+      return;
+    }
+    if (trimmed === current) return;
+
+    // Held separately rather than mutating the prop: the parent owns that
+    // object, and writing to it would not re-render anyway.
+    setTitleOverrides((prev) => ({ ...prev, [content.id]: trimmed }));
+
+    try {
+      await fetchAPI(`/content/${content.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ title: trimmed }),
+      });
+      if (onRefreshCurriculum) onRefreshCurriculum({ silent: true });
+    } catch (err) {
+      setTitleOverrides((prev) => {
+        const next = { ...prev };
+        delete next[content.id];
+        return next;
+      });
+      alert(err.message || 'Could not rename this item.');
+    }
+  };
+
   const handleDeleteContent = async (e, contentId) => {
     e.stopPropagation();
     if (!window.confirm('Delete this content item?')) return;
@@ -193,6 +242,26 @@ export default function CourseAccordion({
     } catch (err) {
       alert(err.message || 'Failed to delete content');
     }
+  };
+
+  /**
+   * Open the builder on an existing quiz.
+   *
+   * Saving replaces the question set, which removes the per-question answers
+   * of anyone who has already taken it — so say that plainly first rather than
+   * letting a teacher discover it from missing review data later.
+   */
+  const handleEditQuiz = (quiz) => {
+    if (quiz.is_completed || Number(quiz.attempt_count) > 0) {
+      const ok = window.confirm(
+        'Students have already taken this quiz.\n\n' +
+        'Editing replaces its questions, so their per-question answers will be ' +
+        'removed. Recorded scores are kept.\n\nContinue?'
+      );
+      if (!ok) return;
+    }
+    setEditingQuizId(quiz.id);
+    setIsQuizModalOpen(true);
   };
 
   const handleDeleteQuiz = async (quizId) => {
@@ -548,7 +617,7 @@ export default function CourseAccordion({
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 line-clamp-2 break-words">{content.title}</h4>
+                          <h4 className="font-bold text-sm md:text-lg leading-tight mb-0.5 md:mb-1 line-clamp-2 break-words">{titleOverrides[content.id] ?? content.title}</h4>
                           {!isVideo && <p className="text-xs md:text-sm font-medium text-gray-500 truncate">PDF • {formatSize(content.file_size_bytes)}</p>}
                           {isVideo && !isProcessing && !isFailed && (
                             <p className="text-xs md:text-sm font-medium text-gray-500 flex items-center gap-1.5">
@@ -638,6 +707,17 @@ export default function CourseAccordion({
 
                         {isCreator && (
                           <button
+                            title="Rename"
+                            aria-label={`Rename ${content.title}`}
+                            onClick={(e) => handleRenameContent(e, content)}
+                            className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-white border-2 border-black rounded-md hover:bg-[#F9E076] transition-colors"
+                          >
+                            <Edit size={14} strokeWidth={3} />
+                          </button>
+                        )}
+
+                        {isCreator && (
+                          <button
                             title="Delete Asset"
                             onClick={(e) => handleDeleteContent(e, content.id)}
                             className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
@@ -701,6 +781,17 @@ export default function CourseAccordion({
           </button>
           {isCreator && (
             <button
+              title="Edit quiz"
+              aria-label={`Edit ${quiz.title}`}
+              onClick={() => handleEditQuiz(quiz)}
+              className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-white border-2 border-black rounded-md hover:bg-[#F9E076] transition-colors"
+            >
+              <Edit size={14} strokeWidth={3} />
+            </button>
+          )}
+          {isCreator && (
+            <button
+              title="Delete quiz"
               onClick={() => handleDeleteQuiz(quiz.id)}
               className="w-8 h-8 md:w-9 md:h-9 shrink-0 flex items-center justify-center bg-red-400 border-2 border-black rounded-md hover:scale-105 transition-transform"
             >
@@ -887,7 +978,7 @@ export default function CourseAccordion({
                 <button onClick={() => onAddPDF(module.id, activeTabId)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#A7E2D1] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
                   <FilePlus size={16} strokeWidth={3} className="md:w-[18px] md:h-[18px]" /> <span className="md:hidden">PDF</span><span className="hidden md:inline">Add PDF Here</span>
                 </button>
-                <button onClick={() => setIsQuizModalOpen(true)} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#F4DFD8] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
+                <button onClick={() => { setEditingQuizId(null); setIsQuizModalOpen(true); }} className="flex items-center gap-1.5 md:gap-2 px-3 md:px-5 py-2 md:py-2.5 bg-[#F4DFD8] border-2 border-black rounded-lg md:rounded-xl font-bold text-xs md:text-sm md:shadow-[2px_2px_0px_0px_#111] hover:scale-[1.02] transition-transform">
                   <HelpCircle size={16} strokeWidth={3} className="md:w-[18px] md:h-[18px]" /> <span className="md:hidden">Quiz</span><span className="hidden md:inline">Create Quiz Here</span>
                 </button>
               </div>
@@ -1062,10 +1153,11 @@ export default function CourseAccordion({
 
       <QuizModal
         isOpen={isQuizModalOpen}
-        onClose={() => setIsQuizModalOpen(false)}
+        onClose={() => { setIsQuizModalOpen(false); setEditingQuizId(null); }}
         moduleId={module.id}
         folderId={activeTabId}
-        onSave={() => { setQuizzesLoaded(false); loadQuizzes(); }}
+        editQuizId={editingQuizId}
+        onSave={() => { setEditingQuizId(null); setQuizzesLoaded(false); loadQuizzes(); }}
       />
       {takingQuizId && (
         <QuizTakeModal

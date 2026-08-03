@@ -913,6 +913,110 @@ router.get("/summary/:quizId", authMiddleware, async (req, res) => {
 // ============================================================
 // DELETE QUIZ
 // ============================================================
+/**
+ * PUT /api/quiz/:quizId — update a quiz and its questions.
+ *
+ * The whole question set is replaced rather than diffed. Matching submitted
+ * questions to stored ones would need stable ids the builder does not carry,
+ * and a wrong match would silently move a correct answer onto the wrong
+ * question — worse than the cost of rewriting a handful of rows.
+ *
+ * Consequence worth knowing: existing attempts reference question ids that
+ * this deletes, so past answers are removed with them. The UI warns when the
+ * quiz already has attempts.
+ */
+router.put("/:quizId", authMiddleware, async (req, res) => {
+    const { quizId } = req.params;
+    const {
+        title, description, questions, time_limit,
+        shuffle_questions, shuffle_options,
+    } = req.body;
+
+    if (!title || !Array.isArray(questions) || questions.length === 0) {
+        return res.status(400).json({ error: "title and at least one question are required" });
+    }
+
+    let minutes = null;
+    if (time_limit !== undefined && time_limit !== null && time_limit !== "") {
+        minutes = Number(time_limit);
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 480) {
+            return res.status(400).json({
+                error: "Time limit must be a whole number of minutes between 1 and 480, or left empty for no limit.",
+            });
+        }
+    }
+
+    for (const q of questions) {
+        if (!q.question_text || !Array.isArray(q.options) || q.options.length < 2) {
+            return res.status(400).json({ error: "Each question needs text and at least 2 options" });
+        }
+        if (
+            typeof q.correct_option_index !== "number" ||
+            q.correct_option_index < 0 ||
+            q.correct_option_index >= q.options.length
+        ) {
+            return res.status(400).json({ error: "Each question needs a valid correct_option_index" });
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        const owner = await client.query(`
+            SELECT c.educator_id
+            FROM quizzes q
+            JOIN modules m ON q.module_id = m.id
+            JOIN courses c ON m.course_id = c.id
+            WHERE q.id = $1
+        `, [quizId]);
+
+        if (owner.rows.length === 0) return res.status(404).json({ error: "Quiz not found" });
+        if (owner.rows[0].educator_id !== req.user.id && req.user.role !== 'admin') {
+            return res.status(403).json({ error: "Only the course creator can edit this quiz" });
+        }
+
+        await client.query("BEGIN");
+
+        await client.query(`
+            UPDATE quizzes
+            SET title = $1,
+                description = $2,
+                time_limit = $3,
+                shuffle_questions = $4,
+                shuffle_options = $5,
+                updated_at = NOW()
+            WHERE id = $6
+        `, [
+            title,
+            description || "",
+            minutes,
+            shuffle_questions !== false,
+            shuffle_options !== false,
+            quizId,
+        ]);
+
+        // quiz_answers references quiz_questions, so this cascades to past
+        // answers. Attempts keep their recorded score; only the per-question
+        // breakdown is lost.
+        await client.query(`DELETE FROM quiz_questions WHERE quiz_id = $1`, [quizId]);
+
+        for (const q of questions) {
+            await client.query(`
+                INSERT INTO quiz_questions (quiz_id, question_text, options, correct_option_index, image_url)
+                VALUES ($1, $2, $3, $4, $5)
+            `, [quizId, q.question_text, JSON.stringify(q.options), q.correct_option_index, q.image_url || null]);
+        }
+
+        await client.query("COMMIT");
+        res.json({ success: true, message: "Quiz updated" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Quiz update error:", err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
+    }
+});
+
 router.delete("/:quizId", authMiddleware, async (req, res) => {
     try {
         const { quizId } = req.params;

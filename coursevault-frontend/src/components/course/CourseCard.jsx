@@ -125,16 +125,14 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
             <Badge colorClass={tagColor}>{course.category || 'General'}</Badge>
           </div>
           <h3 className="text-sm md:text-2xl font-bold leading-tight mb-0.5 md:mb-2 pr-1 line-clamp-2">{course.title}</h3>
-          <p className="flex items-center gap-1.5 text-gray-600 font-bold text-[11px] md:text-sm mb-1 md:mb-4 min-w-0">
-            <span className="inline-flex items-center justify-center w-5 h-5 md:w-6 md:h-6 rounded-full bg-[#F9E076] border border-black text-[10px] md:text-xs">
-              🧑‍🏫
-            </span>
-            <span className="truncate">
-              {course.educator_name && course.educator_name.toLowerCase() !== 'anon'
-                ? `Taught by ${course.educator_name}`
-                : 'Taught by Shardha Vidyapeeth'}
-            </span>
-          </p>
+          {/* The description tells a student what the course covers; the
+              educator's name was the same on every card and said nothing.
+              Clamped rather than truncated so a couple of lines can show. */}
+          {course.description?.trim() && (
+            <p className="text-gray-600 font-medium text-[11px] md:text-sm mb-1 md:mb-4 min-w-0 line-clamp-2 md:line-clamp-3">
+              {course.description}
+            </p>
+          )}
 
           <div className="mt-auto flex justify-between md:justify-end items-center md:items-end gap-2">
             {/* CTA BUTTON: Shows Start/Continue pill if My Learning, Round Play if Explore */}

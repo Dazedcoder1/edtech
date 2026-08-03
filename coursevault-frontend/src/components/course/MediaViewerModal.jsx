@@ -2,13 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Loader, FileDown } from 'lucide-react';
 import { fetchAPI } from '../../services/api.js';
 import Hls from 'hls.js';
+import PdfCanvasViewer from './PdfCanvasViewer.jsx';
 
 export default function MediaViewerModal({ content, courseId, isEnrolled, onClose }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
   // A directly-stored MP4 plays natively; HLS.js must not touch it.
   const [isProgressive, setIsProgressive] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState(null);
+  // Raw bytes, not a blob URL: the canvas viewer needs the data itself.
+  const [pdfData, setPdfData] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [error, setError] = useState(null);
   const [savedPosition, setSavedPosition] = useState(0);
@@ -28,7 +30,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
     setLoading(true);
     setStreamUrl(null);
     setIsProgressive(false);
-    setPdfUrl(null);
+    setPdfData(null);
     setDownloadUrl(null);
     setError(null);
 
@@ -102,7 +104,9 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           const objectUrl = URL.createObjectURL(new Blob([rawBlob], { type: blobType }));
 
           if (blobType === 'application/pdf') {
-            setPdfUrl(`${objectUrl}#toolbar=0&navpanes=0&scrollbar=0`);
+            // Rendered by us rather than the browser — see PdfCanvasViewer.
+            URL.revokeObjectURL(objectUrl);
+            setPdfData(await rawBlob.arrayBuffer());
           } else {
             // Browsers cannot render Word/PowerPoint inline. Offer the file
             // rather than showing an empty viewer.
@@ -220,10 +224,9 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
 
   useEffect(() => {
     return () => {
-      if (pdfUrl) URL.revokeObjectURL(pdfUrl.split('#')[0]);
       if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     };
-  }, [pdfUrl, downloadUrl]);
+  }, [downloadUrl]);
 
   if (!content || !content.id) return null;
   
@@ -286,18 +289,13 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
             </div>
           )}
 
-          {!loading && !error && isPdf && pdfUrl && (
-            /* The parent is `flex items-center justify-center`, so this is a
-               flex item that does not stretch — `height: 100%` resolves
-               against an auto-height line and can compute to zero, leaving a
-               blank panel. self-stretch plus an explicit flex-1 makes the
-               height real rather than inherited from nothing. */
-            <iframe
-              src={pdfUrl}
-              title={content.title || 'PDF Viewframe'}
-              className="w-full flex-1 self-stretch bg-white"
-              style={{ minHeight: '70vh', border: 'none' }}
-            />
+          {/* Drawn to canvas rather than handed to an <iframe>: Android Chrome
+              has no built-in PDF viewer and shows a download stub instead, so
+              the iframe worked on a laptop and failed on a phone. */}
+          {!loading && !error && isPdf && pdfData && (
+            <div className="w-full flex-1 self-stretch" style={{ minHeight: '70vh' }}>
+              <PdfCanvasViewer data={pdfData} title={content.title} />
+            </div>
           )}
         </div>
       </div>

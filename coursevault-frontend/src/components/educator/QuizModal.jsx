@@ -12,7 +12,14 @@ const emptyQuestion = () => ({
   image_url: '', // 🌟 Saves diagram URL to the question state
 });
 
-export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave }) {
+/**
+ * @param {string} [editQuizId] when set, the modal loads that quiz and saves
+ *        over it instead of creating a new one.
+ */
+export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave, editQuizId = null }) {
+  const isEditing = Boolean(editQuizId);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [questions, setQuestions] = useState([emptyQuestion()]);
@@ -24,17 +31,52 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
   const [shuffleOptions, setShuffleOptions] = useState(true);
 
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+
+    setUploadingIndex(null);
+    setShowImport(false);
+    setLoadError('');
+
+    if (!editQuizId) {
       setTitle('');
       setDescription('');
       setQuestions([emptyQuestion()]);
-      setUploadingIndex(null);
-      setShowImport(false);
       setTimeLimit('');
       setShuffleQuestions(true);
       setShuffleOptions(true);
+      return;
     }
-  }, [isOpen]);
+
+    // Pull the existing quiz in. The owner's copy of this endpoint includes
+    // correct_option_index, which is what makes faithful editing possible.
+    let cancelled = false;
+    setIsLoading(true);
+    fetchAPI(`/quiz/${editQuizId}`)
+      .then((data) => {
+        if (cancelled) return;
+        setTitle(data.quiz?.title || '');
+        setDescription(data.quiz?.description || '');
+        setTimeLimit(data.quiz?.time_limit ?? '');
+        setShuffleQuestions(data.quiz?.shuffle_questions !== false);
+        setShuffleOptions(data.quiz?.shuffle_options !== false);
+        setQuestions(
+          (data.questions || []).map((q) => ({
+            question_text: q.question_text || '',
+            options: Array.isArray(q.options) ? q.options : ['', ''],
+            correct_option_index: q.correct_option_index ?? 0,
+            image_url: q.image_url || '',
+          }))
+        );
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(err.message || 'Could not load this quiz.');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [isOpen, editQuizId]);
 
   if (!isOpen) return null;
 
@@ -147,8 +189,8 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
 
     setIsSaving(true);
     try {
-      await fetchAPI('/quiz/create', {
-        method: 'POST',
+      await fetchAPI(isEditing ? `/quiz/${editQuizId}` : '/quiz/create', {
+        method: isEditing ? 'PUT' : 'POST',
         body: JSON.stringify({ 
           moduleId, 
           title, 
@@ -174,7 +216,7 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm font-sans">
       <div className="relative w-full max-w-2xl bg-white border-[3px] border-black rounded-2xl flex flex-col shadow-[8px_8px_0px_0px_#111] max-h-[90vh]">
         <div className="flex justify-between items-center p-5 border-b-[3px] border-black bg-[#F9E076] shrink-0">
-          <h3 className="font-black text-xl uppercase">Create Quiz</h3>
+          <h3 className="font-black text-xl uppercase">{isEditing ? 'Edit Quiz' : 'Create Quiz'}</h3>
           <button
             onClick={onClose}
             className="w-9 h-9 border-2 border-black bg-white rounded-full flex items-center justify-center hover:scale-105 transition-transform"
@@ -183,6 +225,16 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
           </button>
         </div>
 
+        {isLoading ? (
+          <div className="flex-1 min-h-0 flex items-center justify-center p-10 font-bold text-gray-500">
+            Loading quiz...
+          </div>
+        ) : loadError ? (
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 p-10 text-center">
+            <p className="font-bold text-red-600">Could not load this quiz.</p>
+            <p className="text-sm text-gray-500">{loadError}</p>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="flex-1 min-h-0 overflow-y-auto p-6 flex flex-col gap-6">
           {showImport ? (
             <DocxImportPanel onImport={handleImport} onCancel={() => setShowImport(false)} />
@@ -379,9 +431,10 @@ export default function QuizModal({ isOpen, onClose, moduleId, folderId, onSave 
           </button>
 
           <Button type="submit" variant="primary" disabled={isSaving || uploadingIndex !== null} className="rounded-xl border-[3px] py-3 font-black text-base shadow-[4px_4px_0px_0px_#111]">
-            {isSaving ? 'Saving...' : 'Save Quiz'}
+            {isSaving ? 'Saving...' : isEditing ? 'Save Changes' : 'Save Quiz'}
           </Button>
         </form>
+        )}
       </div>
     </div>
   );

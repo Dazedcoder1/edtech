@@ -178,6 +178,10 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
         // 🚀 RESTORED: check both body and query for moduleId.
         const moduleId = req.body.moduleId || req.query.moduleId;
         const { title, description, content_type, preview } = req.body;
+        // The modal sends the tab the educator had open. It was being ignored,
+        // so every upload landed unfiled and appeared under General no matter
+        // which chapter it was added from.
+        const folderId = req.body.folder_id || req.query.folder_id || null;
         const file = req.file;
         const userId = req.user.id || req.user.userId || req.user.sub;
         
@@ -203,6 +207,12 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
                     WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
                 `, [contentId, moduleId]);
             }
+            // Re-uploading a file that already exists should still file it
+            // where the educator asked, rather than leaving it where it was.
+            if (folderId) {
+                await pool.query(`UPDATE content_items SET folder_id = $1 WHERE id = $2`, [folderId, contentId]);
+                existing.rows[0].folder_id = folderId;
+            }
             return res.status(200).json({ success: true, message: "File already exists.", content: existing.rows[0], isDuplicate: true });
         }
 
@@ -211,9 +221,9 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
         await r2Client.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: r2Key, Body: file.buffer, ContentType: mimeType }));
 
         const result = await pool.query(`
-            INSERT INTO content_items (title, description, content_type, file_hash, file_name, file_size_bytes, mime_type, r2_key, status, preview, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ready', $9, $10) RETURNING *
-        `, [title, description, content_type, fileHash, file.originalname, file.size, mimeType, r2Key, preview === 'true' || preview === true, userId]);
+            INSERT INTO content_items (title, description, content_type, file_hash, file_name, file_size_bytes, mime_type, r2_key, status, preview, created_by, folder_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ready', $9, $10, $11) RETURNING *
+        `, [title, description, content_type, fileHash, file.originalname, file.size, mimeType, r2Key, preview === 'true' || preview === true, userId, folderId]);
 
         const contentId = result.rows[0].id;
 
@@ -242,6 +252,7 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
         // get linked into any module's content_ids array.
         const moduleId = req.body.moduleId || req.query.moduleId;
         const { title, description, preview } = req.body;
+        const folderId = req.body.folder_id || req.query.folder_id || null;
         const file = req.file;
         const userId = req.user.id || req.user.userId || req.user.sub;
 
@@ -275,6 +286,10 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
                     WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
                 `, [contentId, moduleId]);
             }
+            if (folderId) {
+                await pool.query(`UPDATE content_items SET folder_id = $1 WHERE id = $2`, [folderId, contentId]);
+                existing.rows[0].folder_id = folderId;
+            }
             return res.status(200).json({ success: true, message: "Video already exists.", content: existing.rows[0], isDuplicate: true });
         }
 
@@ -286,9 +301,9 @@ router.post("/upload-video", authMiddleware, handleUpload(videoUpload.single("fi
         const result = await pool.query(`
             INSERT INTO content_items (
                 title, description, content_type, file_hash, file_name, file_size_bytes, mime_type,
-                status, preview, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', $8, $9) RETURNING id
-        `, [title, description || "", "video", fileHash, file.originalname, file.size, file.mimetype, preview === 'true' || preview === true, userId]);
+                status, preview, created_by, folder_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', $8, $9, $10) RETURNING id
+        `, [title, description || "", "video", fileHash, file.originalname, file.size, file.mimetype, preview === 'true' || preview === true, userId, folderId]);
 
         const contentId = result.rows[0].id;
 
