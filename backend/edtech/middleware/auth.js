@@ -190,6 +190,38 @@ async function authMiddleware(req, res, next) {
                   );
                   req.isEnrolled = enrollmentCheck.rows.length > 0;
                   console.log(`   - isEnrolled: ${req.isEnrolled ? '✅ YES' : '❌ NO'}`);
+
+                  /*
+                   * Distinguish "expired" from "never enrolled".
+                   *
+                   * Both produced the same "you do not have permission"
+                   * message, which reads as a broken app to a student who did
+                   * pay — and gives no hint that renewing is the fix. Looked up
+                   * only when access has already been refused, so it costs
+                   * nothing on the normal path.
+                   */
+                  if (!req.isEnrolled) {
+                      const lapsed = await pool.query(
+                          `SELECT e.expires_at
+                             FROM enrollments e
+                            WHERE e.user_id = $1
+                              AND e.status = 'active'
+                              AND e.expires_at IS NOT NULL
+                              AND e.expires_at <= NOW()
+                              AND e.course_id IN (
+                                  SELECT $2::uuid
+                                  UNION
+                                  SELECT parent_course_id FROM courses
+                                   WHERE id = $2::uuid AND parent_course_id IS NOT NULL
+                              )
+                            ORDER BY e.expires_at DESC LIMIT 1`,
+                          [req.user.id, req.courseId]
+                      );
+                      if (lapsed.rows.length > 0) {
+                          req.accessExpiredAt = lapsed.rows[0].expires_at;
+                          console.log(`   - access expired at ${req.accessExpiredAt.toISOString()}`);
+                      }
+                  }
               } else {
                   if (req.isContentCreator) console.log(`   - Skipping enrollment check (user is creator)`);
                   if (req.isPreviewContent) console.log(`   - Skipping enrollment check (content is preview)`);
@@ -234,7 +266,12 @@ async function authMiddleware(req, res, next) {
           } else {
               console.log(`   ❌ ACCESS DENIED (not creator, not enrolled, not preview)`);
               console.log(`\n${'='.repeat(70)}\n`);
-              return res.status(403).json({ error: "Access denied. You do not have permission to view or manage this content." });
+              return res.status(403).json({
+                  error: req.accessExpiredAt
+                      ? `Your access to this course ended on ${new Date(req.accessExpiredAt).toLocaleDateString()}. Renew it to continue.`
+                      : "Access denied. You do not have permission to view or manage this content.",
+                  expired: Boolean(req.accessExpiredAt),
+              });
           }
       }
       

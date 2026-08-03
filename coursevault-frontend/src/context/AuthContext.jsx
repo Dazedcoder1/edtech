@@ -25,6 +25,21 @@ export const AuthProvider = ({ children }) => {
     initAuth();
   }, []);
 
+  /**
+   * Where a freshly signed-in user belongs.
+   *
+   * Both login and register sent everyone to /explore, which is the student
+   * browse page. An educator therefore landed in the student view and only
+   * reached their own panel by noticing the Dashboard tab and clicking it —
+   * which looked like the app had logged them in as the wrong kind of user,
+   * especially right after signing out of a student account.
+   *
+   * MainLayout already picks the navigation from the same role, so this keeps
+   * the landing page and the nav consistent.
+   */
+  const homeFor = (role) =>
+    role === 'educator' || role === 'admin' ? '/dashboard' : '/explore';
+
   const login = async (email, password) => {
     const data = await fetchAPI('/auth/login', {
       method: 'POST',
@@ -32,7 +47,7 @@ export const AuthProvider = ({ children }) => {
     });
     localStorage.setItem('token', data.token);
     setUser(data.user);
-    navigate('/explore');
+    navigate(homeFor(data.user?.role), { replace: true });
   };
 
   const register = async (name, email, password, role) => {
@@ -42,13 +57,15 @@ export const AuthProvider = ({ children }) => {
     });
     localStorage.setItem('token', data.token);
     setUser(data.user);
-    navigate('/explore');
+    navigate(homeFor(data.user?.role), { replace: true });
   };
 
   const logout = () => {
     localStorage.removeItem('token');
     setUser(null);
-    navigate('/login');
+    // replace: otherwise Back returns to the previous account's page, which
+    // renders from cache for a moment before the redirect kicks in.
+    navigate('/login', { replace: true });
   };
 
   /**

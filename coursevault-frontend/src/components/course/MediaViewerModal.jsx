@@ -260,11 +260,16 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
           )}
 
           {!loading && !error && isPdf && pdfUrl && (
+            /* The parent is `flex items-center justify-center`, so this is a
+               flex item that does not stretch — `height: 100%` resolves
+               against an auto-height line and can compute to zero, leaving a
+               blank panel. self-stretch plus an explicit flex-1 makes the
+               height real rather than inherited from nothing. */
             <iframe
               src={pdfUrl}
               title={content.title || 'PDF Viewframe'}
-              className="w-full bg-white"
-              style={{ height: '100%', minHeight: '60vh', border: 'none' }}
+              className="w-full flex-1 self-stretch bg-white"
+              style={{ minHeight: '70vh', border: 'none' }}
             />
           )}
         </div>

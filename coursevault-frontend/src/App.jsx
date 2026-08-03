@@ -14,6 +14,20 @@ import ScreenProtection from './components/security/ScreenProtection.jsx';
 
 import './styles/globals.css';
 
+/**
+ * Send people to the landing page for their role.
+ *
+ * "/" and the catch-all both pointed at /explore, the student browse page, so
+ * an educator arriving at either — a bookmark, a stale URL, a refresh on a
+ * deleted route — was dropped into the student view and had to find their way
+ * to Dashboard by hand.
+ */
+const RoleHome = () => {
+  const { user } = useAuth();
+  const target = user?.role === 'educator' || user?.role === 'admin' ? '/dashboard' : '/explore';
+  return <Navigate to={target} replace />;
+};
+
 // Protected Route Wrapper
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
@@ -34,7 +48,7 @@ export default function App() {
             
             {/* Protected Application Routes */}
             <Route element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
-              <Route path="/" element={<Navigate to="/explore" replace />} />
+              <Route path="/" element={<RoleHome />} />
               
               {/* Student Specific */}
               <Route path="/explore" element={<ExplorePage />} />
@@ -52,7 +66,7 @@ export default function App() {
             </Route>
             
             {/* Catch-all Redirect */}
-            <Route path="*" element={<Navigate to="/explore" replace />} />
+            <Route path="*" element={<RoleHome />} />
           </Routes>
         </ScreenProtection>
       </AuthProvider>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search } from 'lucide-react';
+import { Plus, GraduationCap, ChevronRight, Layers, Trash2, Pencil, ChevronUp, ChevronDown, Search, X } from 'lucide-react';
 import CourseCard from '../components/course/CourseCard.jsx';
 import Button from '../components/ui/Button.jsx';
 import CourseModal from '../components/educator/CourseModal.jsx';
@@ -238,8 +238,20 @@ export default function EducatorDashboardPage() {
           onChange={(e) => setDashQuery(e.target.value)}
           placeholder="Search your classes and subjects..."
           aria-label="Search your classes and subjects"
-          className="w-full h-11 pl-10 pr-3 border-2 border-black rounded-xl bg-white font-medium shadow-[3px_3px_0px_0px_#111] focus:outline-none focus:ring-2 focus:ring-[#F26B4D]"
+          className="w-full h-11 pl-10 pr-10 border-2 border-black rounded-xl bg-white font-medium shadow-[3px_3px_0px_0px_#111] focus:outline-none focus:ring-2 focus:ring-[#F26B4D]"
         />
+        {/* The browser's own clear button is suppressed in globals.css, so this
+            box needs its own — matching the one on Explore. */}
+        {dashQuery && (
+          <button
+            type="button"
+            onClick={() => setDashQuery('')}
+            aria-label="Clear search"
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full border-2 border-black bg-white hover:bg-[#F26B4D] hover:text-white transition-colors"
+          >
+            <X size={13} strokeWidth={3} />
+          </button>
+        )}
       </div>
 
       {query && (
