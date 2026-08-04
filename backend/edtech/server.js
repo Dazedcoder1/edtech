@@ -16,6 +16,8 @@ import videoRoutes from "./routes/video.js";
 import analyticsRoutes from "./routes/analytics.js";
 import quizRoutes from "./routes/quiz.js";        // ✅ Quiz routes
 import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
+import notificationRoutes from "./routes/notifications.js";
+import supportRoutes from "./routes/support.js";
 
 // Import config
 import pool from "./config/database.js";
@@ -310,6 +312,115 @@ async function setupDatabase() {
         // whether a student can open a paid course.
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_enrollments_expires_at ON enrollments(expires_at)`);
 
+        /*
+         * Stamped the first time a course is announced to students.
+         *
+         * Publishing is a toggle, and a teacher fixing a typo may well
+         * unpublish and republish several times. Without a record that the
+         * announcement already went out, every one of those flips would push a
+         * fresh notification to every student on the platform.
+         *
+         * NULL means "never announced", which is the correct starting state
+         * for courses that already exist — they are not new to anyone.
+         */
+        await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ DEFAULT NULL`);
+
+        /*
+         * Backfill: everything already published pre-dates this feature.
+         *
+         * Without this, the first publish-toggle on any existing course would
+         * announce it as new, and a teacher tidying up their catalogue could
+         * notify every student about a course that has been up for months.
+         */
+        await pool.query(`
+            UPDATE courses
+               SET announced_at = COALESCE(updated_at, created_at, NOW())
+             WHERE announced_at IS NULL
+               AND status = 'published'
+        `);
+
+        // ============================================
+        // NOTIFICATIONS
+        // ============================================
+        /*
+         * One row per recipient, not one row per event.
+         *
+         * The alternative — a single announcement row plus a join table of who
+         * has read it — saves storage but makes every read expensive: the
+         * unread badge, which polls, would need an anti-join against the read
+         * table on each poll. Fanning out at write time means the badge is a
+         * single indexed COUNT, and per-user state (read, dismissed) has an
+         * obvious home. Writes are rare; reads happen every minute per user.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS notifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                actor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                type VARCHAR(40) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                body TEXT,
+                course_id UUID REFERENCES courses(id) ON DELETE CASCADE,
+                link TEXT,
+                read_at TIMESTAMPTZ DEFAULT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        // The feed query is "my notifications, newest first"; the badge is
+        // "my unread count". Both are covered here.
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+                ON notifications(user_id, created_at DESC)
+        `);
+        // Partial index: only unread rows are ever counted, and read rows
+        // accumulate indefinitely, so indexing them wastes space.
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_notifications_unread
+                ON notifications(user_id) WHERE read_at IS NULL
+        `);
+
+        // ============================================
+        // SUPPORT TICKETS
+        // ============================================
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                subject VARCHAR(255) NOT NULL,
+                category VARCHAR(40) DEFAULT 'other',
+                course_id UUID REFERENCES courses(id) ON DELETE SET NULL,
+                status VARCHAR(20) DEFAULT 'open',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        /*
+         * The opening message is stored here too, rather than as a `body`
+         * column on the ticket. A thread whose first entry lives in a
+         * different table than the rest needs special-casing at every render
+         * and every ordering; one uniform list does not.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS support_ticket_messages (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                ticket_id UUID NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_support_tickets_user
+                ON support_tickets(user_id, created_at DESC)
+        `);
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket
+                ON support_ticket_messages(ticket_id, created_at)
+        `);
+
         console.log("✅ Database schema ready");
     } catch (err) {
         console.error("❌ Database setup error:", err);
@@ -370,6 +481,8 @@ app.use("/api/video", videoRoutes);
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/quiz", quizRoutes);      // ✅ Quiz routes
 app.use("/api/test", testRoutes);      // ✅ Test routes (NEW)
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/support", supportRoutes);
 
 // ============================================
 // HLS Proxy Route

@@ -1,9 +1,11 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
+import NotificationBell from './NotificationBell.jsx';
+import HelpDeskPanel from './HelpDeskPanel.jsx';
 
 const transitionColors = [
   "#E63946", // Red
@@ -19,6 +21,15 @@ export default function MainLayout() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [helpOpen, setHelpOpen] = useState(false);
+  // Set when the drawer is opened from a ticket notification, so it can land
+  // on that thread instead of the list.
+  const [helpTicketId, setHelpTicketId] = useState(null);
+
+  const openHelp = (ticketId = null) => {
+    setHelpTicketId(ticketId);
+    setHelpOpen(true);
+  };
 
   const currentColor = useMemo(() => {
     const pathHash = location.pathname.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
@@ -74,7 +85,22 @@ export default function MainLayout() {
         </div>
 
         {/* User Info */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <NotificationBell onOpenSupport={openHelp} />
+
+          {/* Help desk. Icon-only at every width — the header already carries
+              the logo, nav and name pill, and a labelled button pushes the
+              name pill off a 360px screen. */}
+          <button
+            type="button"
+            onClick={() => openHelp()}
+            title="Help desk"
+            aria-label="Help desk"
+            className="flex items-center justify-center w-9 h-9 rounded-full border-2 border-black bg-white hover:bg-[#A7E2D1] transition-colors"
+          >
+            <LifeBuoy size={16} strokeWidth={3} />
+          </button>
+
           {/* Signing out lives on the profile page now, so this pill stays
               visible at every width rather than hiding below sm. */}
           <button
@@ -140,6 +166,19 @@ export default function MainLayout() {
           Profile
         </button>
       </div>
+
+      {helpOpen && (
+        <HelpDeskPanel
+          isEducator={user?.role === 'educator'}
+          initialTicketId={helpTicketId}
+          onClose={() => {
+            setHelpOpen(false);
+            // Clear it, or reopening the drawer from the header would jump
+            // back into the thread they read last time.
+            setHelpTicketId(null);
+          }}
+        />
+      )}
     </div>
   );
 }

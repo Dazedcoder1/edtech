@@ -148,3 +148,61 @@ export const fetchAPI = async (endpoint, options = {}) => {
     throw error;
   }
 };
+
+/* ============================================================
+ * Notifications
+ * ============================================================ */
+
+export const notificationsAPI = {
+  list: () => fetchAPI('/notifications'),
+
+  /*
+   * Polled on a timer, so failures are swallowed and reported as zero.
+   *
+   * A rejected promise here would surface as an unhandled rejection every
+   * minute, and a badge that briefly shows nothing is a far smaller problem
+   * than a console full of noise or an error toast on a background poll.
+   */
+  unreadCount: () =>
+    fetchAPI('/notifications/unread-count').catch(() => ({ unread: 0 })),
+
+  markRead: (id) => fetchAPI(`/notifications/${id}/read`, { method: 'POST' }),
+
+  markAllRead: () => fetchAPI('/notifications/read-all', { method: 'POST' }),
+
+  remove: (id) => fetchAPI(`/notifications/${id}`, { method: 'DELETE' }),
+
+  announce: (courseId, title, body) =>
+    fetchAPI('/notifications/announce', {
+      method: 'POST',
+      body: JSON.stringify({ courseId, title, body }),
+    }),
+};
+
+/* ============================================================
+ * Support tickets
+ * ============================================================ */
+
+export const supportAPI = {
+  listTickets: () => fetchAPI('/support/tickets'),
+
+  getTicket: (id) => fetchAPI(`/support/tickets/${id}`),
+
+  createTicket: ({ subject, message, category, courseId }) =>
+    fetchAPI('/support/tickets', {
+      method: 'POST',
+      body: JSON.stringify({ subject, message, category, courseId }),
+    }),
+
+  reply: (id, body) =>
+    fetchAPI(`/support/tickets/${id}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+
+  setStatus: (id, status) =>
+    fetchAPI(`/support/tickets/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
+};

@@ -8,6 +8,7 @@ import CourseModal from '../components/educator/CourseModal.jsx';
 import ModuleModal from '../components/educator/ModuleModal.jsx';
 import ContentModal from '../components/educator/ContentModal.jsx';
 import EnrollmentsModal from '../components/educator/EnrollmentsModal.jsx';
+import AnnouncementModal from '../components/educator/AnnouncementModal.jsx';
 import { fetchAPI } from '../services/api.js';
 import { getBgColor } from '../utils/format.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -50,6 +51,7 @@ export default function CourseDetailPage() {
   const [isModuleModalOpen, setIsModuleModalOpen] = useState(false);
   const [isContentModalOpen, setIsContentModalOpen] = useState(false);
   const [isEnrollmentsModalOpen, setIsEnrollmentsModalOpen] = useState(false);
+  const [isAnnounceOpen, setIsAnnounceOpen] = useState(false);
 
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeFolderId, setActiveFolderId] = useState(null);
@@ -327,6 +329,16 @@ export default function CourseDetailPage() {
                 >
                   Students
                 </button>
+
+                {/* Fifth button in a two-column grid: col-span-2 fills the
+                    trailing row instead of leaving a stranded half-width
+                    button beside a gap. */}
+                <button
+                  onClick={() => setIsAnnounceOpen(true)}
+                  className="col-span-2 md:col-span-1 h-11 md:h-12 w-full md:w-auto md:px-5 flex items-center justify-center gap-2 px-3 text-sm md:text-base font-bold border-2 border-black rounded-xl bg-[#F9E076] shadow-[3px_3px_0px_0px_#111] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[1px_1px_0px_0px_#111] transition-all"
+                >
+                  Announce
+                </button>
               </>
             ) : (
               // col-span-2 so the single student action fills the grid row
@@ -522,6 +534,14 @@ export default function CourseDetailPage() {
         initialTab={contentModalTab}
       />
       <EnrollmentsModal isOpen={isEnrollmentsModalOpen} onClose={() => setIsEnrollmentsModalOpen(false)} courseId={course.id} courseTitle={course.title} />
+
+      {isAnnounceOpen && (
+        <AnnouncementModal
+          courseId={course.id}
+          courseTitle={course.title}
+          onClose={() => setIsAnnounceOpen(false)}
+        />
+      )}
     </div>
   );
 }

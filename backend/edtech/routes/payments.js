@@ -3,6 +3,7 @@ import crypto from "crypto";
 import Razorpay from "razorpay";
 import pool from "../config/database.js";
 import { expiryFrom, activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+import { notifyCourseOwner } from "../utils/notify.js";
 import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
@@ -87,6 +88,15 @@ router.post("/create-order", authMiddleware, async (req, res) => {
             `, [userId, courseId, expiresAt]);
 
             await client.query('COMMIT');
+
+            await notifyCourseOwner(courseId, {
+                type: "enrolment",
+                title: `${req.user.name || "A student"} enrolled`,
+                body: courseData.title,
+                actorId: userId,
+                link: `/analytics`,
+            });
+
             return res.json({
                 success: true,
                 isFree: true,
@@ -243,7 +253,15 @@ router.post("/verify", authMiddleware, async (req, res) => {
         `, [paymentId, order.amount, userId, courseId, paidExpiresAt]);
         
         await client.query('COMMIT');
-        
+
+        await notifyCourseOwner(courseId, {
+            type: "enrolment",
+            title: `${req.user.name || "A student"} enrolled`,
+            body: `Paid ₹${order.amount}`,
+            actorId: userId,
+            link: `/analytics`,
+        });
+
         res.json({
             success: true,
             message: "Payment verified and enrollment successful!"

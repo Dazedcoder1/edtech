@@ -2,6 +2,7 @@
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
+import { announceCourseIfNew } from "../utils/notify.js";
 
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../config/jwt.js";
@@ -312,6 +313,11 @@ router.post("/", authMiddleware, async (req, res) => {
 
             await client.query("COMMIT");
 
+            // Courses are normally created as drafts, so this usually does
+            // nothing — it covers the case of one created published outright.
+            // No-op unless the course is genuinely published and unannounced.
+            await announceCourseIfNew(course.id, req.user.id);
+
             res.status(201).json({
                 success: true,
                 course: course,
@@ -402,8 +408,74 @@ router.put("/:id", authMiddleware, async (req, res) => {
     WHERE id = $8
     RETURNING *
 `, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, id]);
+
+        /*
+         * This is the hook that actually fires in practice: a teacher builds a
+         * course as a draft, then flips it to published.
+         *
+         * Called unconditionally rather than only when `status === 'published'`
+         * in this request. The COALESCE above means an update that omits status
+         * leaves an already-published course published, and announceCourseIfNew
+         * re-reads the committed row and decides for itself — so the decision
+         * is made from the course's real state, not from what this particular
+         * request happened to send.
+         */
+        await announceCourseIfNew(id, req.user.id);
+
         res.json({ success: true, course: result.rows[0] });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * PUT /api/courses/:id/publish
+ *
+ * The Publish/Draft toggle on the course page.
+ *
+ * This route was missing entirely. The frontend has always called it, and
+ * `PUT /:id` did not answer because that pattern matches a single segment
+ * while this URL has two — so every toggle 404'd, the optimistic state was
+ * rolled back, and the button snapped straight back to where it started.
+ *
+ * Body: { is_published: boolean }
+ */
+router.put("/:id/publish", authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { is_published } = req.body;
+
+        if (typeof is_published !== "boolean") {
+            return res.status(400).json({ error: "is_published must be true or false" });
+        }
+
+        // Checked against the row rather than req.isCourseCreator: the
+        // middleware resolves that flag from a courseId it infers from the
+        // path, and an inference that changes shape should not be what decides
+        // who may publish.
+        const owner = await pool.query(
+            `SELECT educator_id FROM courses WHERE id = $1 AND is_active = true`,
+            [id]
+        );
+        if (owner.rows.length === 0) return res.status(404).json({ error: "Course not found" });
+        if (owner.rows[0].educator_id !== req.user.id && req.user.role !== "admin") {
+            return res.status(403).json({ error: "Only the course creator can publish this course" });
+        }
+
+        const result = await pool.query(
+            `UPDATE courses
+                SET status = $2, updated_at = NOW()
+              WHERE id = $1
+            RETURNING *`,
+            [id, is_published ? "published" : "draft"]
+        );
+
+        // Only announces the first time, and only when actually published.
+        const notified = await announceCourseIfNew(id, req.user.id);
+
+        res.json({ success: true, course: result.rows[0], notified });
+    } catch (err) {
+        console.error("PUT /courses/:id/publish:", err);
         res.status(500).json({ error: err.message });
     }
 });

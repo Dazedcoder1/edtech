@@ -7,6 +7,7 @@ import {
     questionOrderSeed,
     optionOrderSeed,
 } from "../utils/quizShuffle.js";
+import { notifyCourseStudents, notifyCourseOwner, courseIdForModule } from "../utils/notify.js";
 
 const router = express.Router();
 
@@ -192,6 +193,19 @@ router.post("/create", authMiddleware, async (req, res) => {
         }
 
         await client.query("COMMIT");
+
+        // After COMMIT and before the response: students are told about a quiz
+        // that definitely exists, and a notification failure cannot roll back
+        // the quiz the teacher just spent time building.
+        const courseId = await courseIdForModule(moduleId);
+        await notifyCourseStudents(courseId, {
+            type: "quiz",
+            title: "New quiz added",
+            body: title,
+            actorId: req.user.id,
+            link: `/course/${courseId}`,
+        });
+
         res.status(201).json({ success: true, quiz });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -585,6 +599,17 @@ router.post("/:quizId/submit", authMiddleware, async (req, res) => {
 
         const { total_quizzes: totalQuizzes, attempted_quizzes: attemptedQuizzes } = quizCountsResult.rows[0];
         const attemptPercent = totalQuizzes > 0 ? Math.round((attemptedQuizzes / totalQuizzes) * 100) : 0;
+
+        // Tell the teacher a submission landed. Addressed to the course owner
+        // rather than every educator: a large platform would otherwise notify
+        // teachers about students they do not teach.
+        await notifyCourseOwner(courseId, {
+            type: "submission",
+            title: `${req.user.name || "A student"} completed a quiz`,
+            body: `Scored ${score}% on ${totalQuestions} question${totalQuestions === 1 ? "" : "s"}`,
+            actorId: req.user.id,
+            link: `/analytics`,
+        });
 
         res.json({
             success: true,

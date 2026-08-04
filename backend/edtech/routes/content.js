@@ -19,12 +19,59 @@ import pool from "../config/database.js";
 import { r2Client, R2_BUCKET_NAME } from "../config/r2.js";
 import authMiddleware from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+import { notifyCourseStudents } from "../utils/notify.js";
 
 import { generateFileHash, getFileExtension, getMimeType } from "../utils/helpers.js";
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMP_VIDEO_DIR = path.join(__dirname, "../temp_videos");
+
+/**
+ * Tell enrolled students that a piece of content is now watchable.
+ *
+ * Called at the point a row reaches status 'ready', not at upload time. A
+ * video is inserted as 'processing' and attached to its module immediately,
+ * then flips to 'ready' minutes later once encoding finishes — announcing at
+ * upload would send students to a player that cannot play anything yet.
+ *
+ * The module is found by searching content_ids rather than being passed in,
+ * because the background encode paths run long after the request that knew it
+ * has ended.
+ *
+ * Never throws: this runs at the tail of upload handlers and inside background
+ * jobs, and neither should fail over a notification.
+ */
+async function announceContentReady(contentId, actorId) {
+    try {
+        const { rows } = await pool.query(
+            `SELECT ci.title,
+                    ci.content_type,
+                    m.course_id
+               FROM content_items ci
+               JOIN modules m ON ci.id = ANY(m.content_ids)
+              WHERE ci.id = $1::uuid
+                AND ci.status = 'ready'
+                AND ci.is_active = true
+              LIMIT 1`,
+            [contentId]
+        );
+        if (rows.length === 0) return;
+
+        const { title, content_type, course_id } = rows[0];
+        const label = content_type === "video" ? "video" : content_type === "pdf" ? "document" : "resource";
+
+        await notifyCourseStudents(course_id, {
+            type: "content",
+            title: `New ${label} available`,
+            body: title,
+            actorId: actorId || null,
+            link: `/course/${course_id}`,
+        });
+    } catch (err) {
+        console.error("[announceContentReady]", err.message);
+    }
+}
 
 /**
  * Resolve the ffmpeg / ffprobe binaries.
@@ -234,6 +281,10 @@ router.post("/upload", authMiddleware, handleUpload(upload.single("file"), 50 * 
                 WHERE id = $2::uuid AND NOT ($1::uuid = ANY(content_ids))
             `, [contentId, moduleId]);
         }
+
+        // PDFs and documents are stored synchronously, so they are already
+        // 'ready' here — unlike video, there is nothing to wait for.
+        if (moduleId) await announceContentReady(contentId, userId);
 
         res.status(201).json({ success: true, content: result.rows[0] });
     } catch (err) {
@@ -1725,6 +1776,9 @@ async function storeDirectly(contentId, inputPath, fileHash, probe) {
         contentId,
     ]);
 
+    // The row is live now, so students can be told about it.
+    await announceContentReady(contentId);
+
     activeJobs.delete(contentId);
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
     return true;
@@ -2028,6 +2082,11 @@ async function transcodeVideo(contentId, inputPath, fileHash, title, resolutions
             if (!isPublished) {
                 isPublished = true;
                 console.log(`   ✅ ${resName} live — remaining renditions continue in background`);
+
+                // Announce on the first rendition going live, not on each one.
+                // The video is watchable from this moment, and later rungs only
+                // add quality options — students do not need telling twice.
+                await announceContentReady(contentId);
             }
         }
 
