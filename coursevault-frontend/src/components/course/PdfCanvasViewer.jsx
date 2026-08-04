@@ -1,12 +1,23 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
-// Vite resolves this to a real URL at build time. Without an explicit worker
-// source pdf.js tries to fetch one relative to the page and fails silently in
-// production, where the path differs from dev.
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+/*
+ * ?worker, not ?url.
+ *
+ * ?url emits the worker as a .mjs asset and lets the browser fetch it as a
+ * module script. That requires the web server to send .mjs as JavaScript —
+ * many send application/octet-stream, and Chrome then refuses it outright
+ * ("Strict MIME type checking is enforced for module scripts"). pdf.js falls
+ * back to a "fake worker", which then fails too, and nothing renders.
+ *
+ * ?worker makes Vite bundle it into an ordinary .js chunk and hands us a
+ * Worker constructor, so the MIME type of .mjs stops mattering.
+ */
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// workerPort takes a live Worker; workerSrc takes a URL. Using the port avoids
+// the fetch entirely.
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 
 /**
  * Render a PDF to canvases instead of handing it to the browser.
