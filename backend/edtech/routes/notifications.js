@@ -8,7 +8,18 @@
  */
 import express from "express";
 import pool from "../config/database.js";
-import authMiddleware from "../middleware/auth.js";
+/*
+ * authOnly, not authMiddleware.
+ *
+ * Same reason as the support router: a notification id is not a content id,
+ * and authMiddleware would infer one from req.params.id and 403 the request.
+ * That is why marking a single notification read silently failed for students
+ * while the badge kept its old count — the POST never reached this file.
+ *
+ * Every query below is already scoped to req.user.id, so ownership does not
+ * depend on the middleware.
+ */
+import { authOnly as authMiddleware } from "../middleware/auth.js";
 import { notifyCourseStudents } from "../utils/notify.js";
 
 const router = express.Router();

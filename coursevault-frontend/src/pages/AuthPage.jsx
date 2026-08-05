@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { Bot, BookOpen } from 'lucide-react';
 import LoginForm from '../components/auth/LoginForm';
 import RegisterForm from '../components/auth/RegisterForm';
+import ForgotPasswordForm from '../components/auth/ForgotPasswordForm';
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
+  const [forgot, setForgot] = useState(false);
 
   return (
     <div className="min-h-screen bg-[#F4DFD8] flex items-center justify-center p-6 relative overflow-hidden">
@@ -19,22 +21,38 @@ export default function AuthPage() {
           <h1 className="text-4xl font-bold mb-2 tracking-tight">CourseVault</h1>
           <p className="text-gray-600 font-medium mb-6">Master new skills today.</p>
 
-          <div className="flex gap-4 mb-8">
-            <button 
-              onClick={() => setIsLogin(true)} 
-              className={`flex-1 font-bold pb-2 border-b-[3px] transition-colors ${isLogin ? 'border-black text-black' : 'border-transparent text-gray-400 hover:text-black'}`}
-            >
-              Log In
-            </button>
-            <button 
-              onClick={() => setIsLogin(false)} 
-              className={`flex-1 font-bold pb-2 border-b-[3px] transition-colors ${!isLogin ? 'border-black text-black' : 'border-transparent text-gray-400 hover:text-black'}`}
-            >
-              Sign Up
-            </button>
-          </div>
+          {/* The Log In / Sign Up switch is hidden during a reset: those tabs
+              would abandon the flow mid-way with no warning, and the form has
+              its own "Back to sign in" control. */}
+          {!forgot && (
+            <div className="flex gap-4 mb-8">
+              <button
+                onClick={() => setIsLogin(true)}
+                className={`flex-1 font-bold pb-2 border-b-[3px] transition-colors ${isLogin ? 'border-black text-black' : 'border-transparent text-gray-400 hover:text-black'}`}
+              >
+                Log In
+              </button>
+              <button
+                onClick={() => setIsLogin(false)}
+                className={`flex-1 font-bold pb-2 border-b-[3px] transition-colors ${!isLogin ? 'border-black text-black' : 'border-transparent text-gray-400 hover:text-black'}`}
+              >
+                Sign Up
+              </button>
+            </div>
+          )}
 
-          {isLogin ? <LoginForm /> : <RegisterForm />}
+          {forgot ? (
+            <ForgotPasswordForm
+              onDone={() => {
+                setForgot(false);
+                setIsLogin(true);
+              }}
+            />
+          ) : isLogin ? (
+            <LoginForm onForgotPassword={() => setForgot(true)} />
+          ) : (
+            <RegisterForm />
+          )}
         </div>
       </div>
     </div>

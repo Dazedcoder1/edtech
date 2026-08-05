@@ -40,20 +40,35 @@ export const AuthProvider = ({ children }) => {
   const homeFor = (role) =>
     role === 'educator' || role === 'admin' ? '/dashboard' : '/explore';
 
-  const login = async (email, password) => {
+  /**
+   * @param {string} identifier a mobile number or an email address
+   * @param {string} password
+   */
+  const login = async (identifier, password) => {
     const data = await fetchAPI('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password })
+      // `email` is sent alongside `identifier` for one release: a browser tab
+      // left open across the deploy will be running the old backend contract.
+      body: JSON.stringify({ identifier, email: identifier, password })
     });
     localStorage.setItem('token', data.token);
     setUser(data.user);
     navigate(homeFor(data.user?.role), { replace: true });
   };
 
-  const register = async (name, email, password, role) => {
+  /**
+   * Takes the whole form as one object.
+   *
+   * Registration now collects nine fields; as positional arguments they would
+   * be a line of same-typed strings where transposing two is silent and
+   * produces an account with a board in the state column.
+   *
+   * @param {{name, phone, password, email?, role?, class_level?, board?, state?, school?}} payload
+   */
+  const register = async (payload) => {
     const data = await fetchAPI('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ name, email, password, role }) // Dynamically passing the role
+      body: JSON.stringify(payload)
     });
     localStorage.setItem('token', data.token);
     setUser(data.user);

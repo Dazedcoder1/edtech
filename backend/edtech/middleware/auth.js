@@ -4,6 +4,65 @@ import pool from "../config/database.js";
 
 import { JWT_SECRET } from "../config/jwt.js";
 
+/**
+ * Authenticate only. No course, module or content resolution.
+ *
+ * authMiddleware below does two jobs: it verifies the token, and it infers
+ * which course/module/content the request is about so it can decide access.
+ * That inference reads `req.params.id` and, for any path not containing
+ * "course" or "module", treats it as a *content* id:
+ *
+ *     const contentId = ... || (req.params.id && !req.path.includes('course')
+ *                                              && !req.path.includes('module')
+ *                                 ? req.params.id : null);
+ *
+ * For a route like GET /api/support/tickets/:id that guess is simply wrong.
+ * The lookup finds no content_items row, no access flag gets set, and the
+ * decision block at the end returns 403 "You do not have permission to view or
+ * manage this content" — for a student reading their own support ticket.
+ *
+ * Educators did not see it, because a missing content row grants them a
+ * creator bypass. So the bug presented as "works for teachers, denied for
+ * students", which looks like a permissions rule and is actually a bad guess.
+ *
+ * Any router whose ids are not content ids should use this instead. It is the
+ * same token check, with none of the inference.
+ */
+export async function authOnly(req, res, next) {
+    try {
+        let token;
+
+        if (req.headers.authorization && req.headers.authorization.startsWith("Bearer ")) {
+            token = req.headers.authorization.split(" ")[1];
+        } else if (req.query.token) {
+            token = req.query.token;
+        }
+
+        if (!token) {
+            return res.status(401).json({ error: "Authentication required" });
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(token, JWT_SECRET);
+        } catch {
+            return res.status(401).json({ error: "Invalid or expired token" });
+        }
+
+        req.user = {
+            id: decoded.id,
+            email: decoded.email,
+            role: decoded.role,
+            name: decoded.name,
+        };
+
+        next();
+    } catch (err) {
+        console.error("authOnly error:", err.message);
+        res.status(500).json({ error: "Authentication failed" });
+    }
+}
+
 async function authMiddleware(req, res, next) {
   try {
       console.log('\n' + '='.repeat(70));

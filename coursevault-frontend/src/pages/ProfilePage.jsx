@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Phone, Lock, Check, AlertTriangle, LogOut } from 'lucide-react';
+import {
+  User, Mail, Phone, Lock, Check, AlertTriangle, LogOut,
+  GraduationCap, BookOpen, MapPin, School,
+} from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
+import PasswordInput from '../components/ui/PasswordInput';
+import { BOARDS, STATES } from '../utils/studentOptions';
 
 function Field({ icon: Icon, label, hint, children }) {
   return (
@@ -40,6 +45,10 @@ export default function ProfilePage() {
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [board, setBoard] = useState('');
+  const [state, setState] = useState('');
+  const [school, setSchool] = useState('');
 
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState('');
@@ -56,8 +65,18 @@ export default function ProfilePage() {
     if (user) {
       setName(user.name || '');
       setPhone(user.phone || '');
+      setEmail(user.email || '');
+      setBoard(user.board || '');
+      setState(user.state || '');
+      setSchool(user.school || '');
     }
   }, [user]);
+
+  const isStudent = user?.role === 'student';
+  // An account created with a mobile number only. The email field stays
+  // editable in that case, because there is no existing address to protect —
+  // once one is saved it locks like everyone else's.
+  const canAddEmail = !user?.email;
 
   const saveProfile = async (e) => {
     e.preventDefault();
@@ -71,11 +90,18 @@ export default function ProfilePage() {
         body: JSON.stringify({
           name: name.trim(),
           phone: phone.trim(),
+          // Only sent when there is no address on file. Sending an unchanged
+          // one is harmless, but sending nothing keeps the request honest
+          // about what it is asking to change.
+          ...(canAddEmail && email.trim() ? { email: email.trim() } : {}),
+          // class_level is deliberately absent: it is locked, and the server
+          // rejects any attempt to move it.
+          ...(isStudent ? { board, state, school: school.trim() } : {}),
         }),
       });
 
       applyProfileUpdate(result);
-      setProfileSuccess('Contact info saved.');
+      setProfileSuccess('Profile saved.');
     } catch (err) {
       setProfileError(err.message || 'Could not save your details.');
     } finally {
@@ -127,7 +153,9 @@ export default function ProfilePage() {
       <div>
         <h1 className="text-3xl md:text-4xl font-black tracking-tight">Your Profile</h1>
         <p className="text-sm text-gray-600 font-medium mt-1">
-          Signed in as <strong>{user.email}</strong>
+          {/* Falls back to the mobile number: email is optional now, and
+              "Signed in as" followed by nothing looks like a broken page. */}
+          Signed in as <strong>{user.email || user.phone || user.name}</strong>
           <span className="ml-2 px-2 py-0.5 text-xs uppercase font-black border-2 border-black rounded-full bg-[#F9E076]">
             {user.role}
           </span>
@@ -139,7 +167,7 @@ export default function ProfilePage() {
         onSubmit={saveProfile}
         className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-4"
       >
-        <h2 className="font-black text-lg uppercase">Contact Info</h2>
+        <h2 className="font-black text-lg uppercase">Your Details</h2>
 
         <Banner tone="error">{profileError}</Banner>
         <Banner tone="success">{profileSuccess}</Banner>
@@ -161,29 +189,105 @@ export default function ProfilePage() {
           the rule, not the rule itself.
         */}
         <Field
-          icon={Mail}
-          label="Email address"
-          hint="This is what you sign in with, and it can't be changed."
+          icon={Phone}
+          label="Mobile number"
+          hint="You sign in with this. It can be corrected, but not removed."
         >
-          <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
-            <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
-              {user.email}
-            </span>
-            <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
-              <Lock size={12} strokeWidth={3} /> Locked
-            </span>
-          </div>
-        </Field>
-
-        <Field icon={Phone} label="Phone number" hint="Optional.">
           <input
             type="tel"
+            inputMode="numeric"
             className={inputClass}
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="+91 98765 43210"
+            placeholder="98765 43210"
+            required
           />
         </Field>
+
+        {canAddEmail ? (
+          <Field
+            icon={Mail}
+            label="Email address"
+            hint="Optional — but once you save one, it can't be changed."
+          >
+            <input
+              type="email"
+              className={inputClass}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+            />
+          </Field>
+        ) : (
+          <Field
+            icon={Mail}
+            label="Email address"
+            hint="This can also be used to sign in, and it can't be changed."
+          >
+            <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
+              <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
+                {user.email}
+              </span>
+              <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                <Lock size={12} strokeWidth={3} /> Locked
+              </span>
+            </div>
+          </Field>
+        )}
+
+        {isStudent && (
+          <>
+            <Field
+              icon={GraduationCap}
+              label="Class"
+              hint="Set when you signed up. Contact support if this is wrong."
+            >
+              <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
+                <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
+                  {user.class_level || '—'}
+                </span>
+                <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                  <Lock size={12} strokeWidth={3} /> Locked
+                </span>
+              </div>
+            </Field>
+
+            <Field icon={BookOpen} label="Board">
+              <select
+                className={inputClass}
+                value={board}
+                onChange={(e) => setBoard(e.target.value)}
+              >
+                <option value="">Not set</option>
+                {BOARDS.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field icon={MapPin} label="State">
+              <select
+                className={inputClass}
+                value={state}
+                onChange={(e) => setState(e.target.value)}
+              >
+                <option value="">Not set</option>
+                {STATES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </Field>
+
+            <Field icon={School} label="School / College" hint="Optional.">
+              <input
+                className={inputClass}
+                value={school}
+                onChange={(e) => setSchool(e.target.value)}
+                placeholder="Govt. Senior Secondary School"
+              />
+            </Field>
+          </>
+        )}
 
 
         <div className="flex justify-end">
@@ -209,8 +313,7 @@ export default function ProfilePage() {
         <Banner tone="success">{pwSuccess}</Banner>
 
         <Field icon={Lock} label="Current password">
-          <input
-            type="password"
+          <PasswordInput
             className={inputClass}
             value={pwCurrent}
             onChange={(e) => setPwCurrent(e.target.value)}
@@ -220,8 +323,7 @@ export default function ProfilePage() {
         </Field>
 
         <Field icon={Lock} label="New password" hint="At least 8 characters.">
-          <input
-            type="password"
+          <PasswordInput
             className={inputClass}
             value={pwNew}
             onChange={(e) => setPwNew(e.target.value)}
@@ -231,8 +333,7 @@ export default function ProfilePage() {
         </Field>
 
         <Field icon={Lock} label="Confirm new password">
-          <input
-            type="password"
+          <PasswordInput
             className={inputClass}
             value={pwConfirm}
             onChange={(e) => setPwConfirm(e.target.value)}

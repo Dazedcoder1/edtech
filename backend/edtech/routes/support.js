@@ -12,7 +12,16 @@
  */
 import express from "express";
 import pool from "../config/database.js";
-import authMiddleware from "../middleware/auth.js";
+/*
+ * authOnly, not authMiddleware.
+ *
+ * A ticket id is not a content id, but authMiddleware infers one from
+ * req.params.id on any path without "course" or "module" in it — so
+ * /tickets/:id was denied for students with a message about content
+ * permissions. Ownership here is enforced by visibleTicketSql in the queries
+ * themselves, which is where it belongs.
+ */
+import { authOnly as authMiddleware } from "../middleware/auth.js";
 import { notifyUsers, notifyEducators } from "../utils/notify.js";
 
 const router = express.Router();
@@ -234,34 +243,41 @@ router.post("/tickets/:id/reply", authMiddleware, async (req, res) => {
 /**
  * PATCH /api/support/tickets/:id/status
  *
- * Educators close and reopen. Students may close their own ticket — the case
- * where they solved it themselves — but may not mark it 'answered', which
- * would hide it from the queue without anyone having replied.
+ * Educators only.
+ *
+ * A student closing their own ticket sounds harmless, but closing is what
+ * removes it from the teacher's queue, and a student cannot know whether the
+ * issue is actually resolved on the other side — someone who gets a workaround
+ * and closes the ticket has quietly cancelled the fix. Deciding a conversation
+ * is finished belongs to the person answering it.
+ *
+ * A student who no longer needs help can say so in a reply; the teacher closes
+ * it. If they want it gone from their own view, that is a different feature
+ * (hiding), not a status change.
  */
 router.patch("/tickets/:id/status", authMiddleware, async (req, res) => {
     try {
+        const isEducator = req.user.role === "educator";
+        if (!isEducator) {
+            return res.status(403).json({ error: "Only your teacher can close or reopen a ticket." });
+        }
+
         const { status } = req.body;
         if (!STATUSES.includes(status)) {
             return res.status(400).json({ error: `status must be one of: ${STATUSES.join(", ")}` });
         }
 
-        const isEducator = req.user.role === "educator";
-        if (!isEducator && status === "answered") {
-            return res.status(403).json({ error: "Only support staff can mark a ticket answered" });
-        }
-
-        const params = isEducator ? [req.params.id, status] : [req.params.id, status, req.user.id];
         const { rows } = await pool.query(
-            `UPDATE support_tickets t
+            `UPDATE support_tickets
                 SET status = $2, updated_at = NOW()
-              WHERE t.id = $1 AND ${isEducator ? "TRUE" : "t.user_id = $3"}
-              RETURNING t.id, t.user_id, t.subject, t.status`,
-            params
+              WHERE id = $1
+            RETURNING id, user_id, subject, status`,
+            [req.params.id, status]
         );
 
         if (rows.length === 0) return res.status(404).json({ error: "Ticket not found" });
 
-        if (isEducator && status === "closed") {
+        if (status === "closed") {
             await notifyUsers([rows[0].user_id], {
                 type: "ticket",
                 title: "Your support ticket was closed",

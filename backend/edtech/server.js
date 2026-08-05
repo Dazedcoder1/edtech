@@ -243,6 +243,39 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32)`);
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
 
+        // ============================================
+        // STUDENT DETAILS
+        // ============================================
+        /*
+         * Email stops being mandatory.
+         *
+         * Students sign up with a mobile number; an email address is optional
+         * and many will not have one. The column stays UNIQUE, so two accounts
+         * still cannot share an address — Postgres permits any number of NULLs
+         * in a unique index, which is exactly the behaviour wanted here.
+         */
+        await pool.query(`ALTER TABLE users ALTER COLUMN email DROP NOT NULL`);
+
+        /*
+         * Phone becomes a login identifier, so it has to be unique.
+         *
+         * A partial index rather than a plain UNIQUE constraint: every account
+         * created before this feature has phone NULL, and while Postgres would
+         * tolerate those duplicates anyway, being explicit documents that only
+         * real numbers are constrained.
+         */
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique
+                ON users(phone) WHERE phone IS NOT NULL
+        `);
+
+        // Academic profile. All nullable: educators do not have a class, and
+        // accounts created before this shipped have none of it.
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS class_level VARCHAR(20)`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS board VARCHAR(40)`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS state VARCHAR(80)`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS school VARCHAR(255)`);
+
         // Quizzes need a sort key so they can be interleaved with PDFs and
         // videos in one ordered list. content_items already has `priority`;
         // this gives quizzes the same field so both sort together.
@@ -338,6 +371,47 @@ async function setupDatabase() {
              WHERE announced_at IS NULL
                AND status = 'published'
         `);
+
+        // ============================================
+        // PASSWORD RESET
+        // ============================================
+        /*
+         * The OTP is stored hashed, like a password.
+         *
+         * A reset code is a temporary credential: anyone holding it can take
+         * the account. Storing it in plain text means a leaked database dump —
+         * or a stray log of a query — hands over every in-flight reset. bcrypt
+         * costs a few milliseconds on a route nobody hits in a loop.
+         *
+         * `attempts` caps guessing: six digits is a million combinations, which
+         * is a lot for a human and nothing for a script.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS password_resets (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                code_hash TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                attempts INT DEFAULT 0,
+                consumed_at TIMESTAMPTZ DEFAULT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        // Every lookup is "the newest live reset for this user".
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_password_resets_user
+                ON password_resets(user_id, created_at DESC)
+        `);
+
+        /*
+         * Clear out anything long dead on boot.
+         *
+         * Codes are useless minutes after they are issued, but the rows would
+         * otherwise accumulate for the life of the install — and every one of
+         * them is a bcrypt hash of a credential that no longer needs to exist.
+         */
+        await pool.query(`DELETE FROM password_resets WHERE created_at < NOW() - INTERVAL '7 days'`);
 
         // ============================================
         // NOTIFICATIONS

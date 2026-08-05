@@ -404,15 +404,20 @@ export default function HelpDeskPanel({ isEducator, onClose, initialTicketId }) 
                       {busy ? <Loader size={15} className="animate-spin" /> : <Send size={15} strokeWidth={3} />}
                       Send
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => changeStatus('closed')}
-                      disabled={busy}
-                      title="Close this ticket"
-                      className="px-3 py-2 rounded-xl border-2 border-black bg-white font-bold text-sm hover:bg-gray-100 disabled:opacity-50"
-                    >
-                      <CheckCircle2 size={15} strokeWidth={3} />
-                    </button>
+                    {/* Closing is the teacher's call. The server rejects it for
+                        students too — this only avoids offering a button that
+                        would come back with a 403. */}
+                    {isEducator && (
+                      <button
+                        type="button"
+                        onClick={() => changeStatus('closed')}
+                        disabled={busy}
+                        title="Close this ticket"
+                        className="px-3 py-2 rounded-xl border-2 border-black bg-white font-bold text-sm hover:bg-gray-100 disabled:opacity-50"
+                      >
+                        <CheckCircle2 size={15} strokeWidth={3} />
+                      </button>
+                    )}
                   </div>
                 </form>
               )}
