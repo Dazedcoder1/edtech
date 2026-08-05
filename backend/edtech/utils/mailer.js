@@ -70,8 +70,77 @@ export async function sendMail({ to, subject, text, html }) {
         const info = await transport.sendMail({ from: FROM, to, subject, text, html });
         return { ok: true, delivered: true, id: info.messageId };
     } catch (err) {
-        console.error("[mailer] send failed:", err.message);
+        console.error(
+            `\n${"=".repeat(70)}\n` +
+            `❌ EMAIL FAILED — ${to} did not receive anything.\n\n` +
+            `${explainMailError(err)}\n\n` +
+            `   Raw error: ${err.message}\n` +
+            `${"=".repeat(70)}\n`
+        );
         return { ok: false, error: err.message };
+    }
+}
+
+/**
+ * Turn an SMTP failure into something actionable.
+ *
+ * nodemailer surfaces the provider's raw response, which is accurate and
+ * unhelpful: "535-5.7.8 Username and Password not accepted" does not tell a
+ * first-time setup that Gmail wants an App Password rather than the account
+ * password. Each of these is a mistake seen in practice.
+ */
+export function explainMailError(err) {
+    const msg = String(err?.message || err);
+    const code = err?.code;
+
+    if (/535|Username and Password not accepted|BadCredentials/i.test(msg)) {
+        return (
+            "Gmail rejected the username or password.\n" +
+            "  • SMTP_PASS must be a 16-character App Password, not your Gmail password.\n" +
+            "  • Generate one at https://myaccount.google.com/apppasswords\n" +
+            "    (2-Step Verification must be on, or that page will not exist).\n" +
+            "  • Remove the spaces Google shows: 'abcd efgh ijkl mnop' -> 'abcdefghijklmnop'."
+        );
+    }
+    if (/Missing credentials|No auth mechanism/i.test(msg)) {
+        return "SMTP_USER or SMTP_PASS is empty. Both are required.";
+    }
+    if (code === "ECONNREFUSED" || /ECONNREFUSED/i.test(msg)) {
+        return `Nothing is listening on ${HOST}:${PORT}. Check SMTP_HOST and SMTP_PORT.`;
+    }
+    if (code === "ETIMEDOUT" || /ETIMEDOUT|timed out/i.test(msg)) {
+        return (
+            `Timed out connecting to ${HOST}:${PORT}.\n` +
+            "  Usually a firewall or ISP blocking outbound SMTP. Try port 465 instead of 587."
+        );
+    }
+    if (code === "EDNS" || /ENOTFOUND|getaddrinfo/i.test(msg)) {
+        return `Could not resolve SMTP_HOST ("${HOST}"). Check it for typos.`;
+    }
+    if (/self.signed|unable to verify|certificate/i.test(msg)) {
+        return (
+            "TLS certificate rejected.\n" +
+            "  Check the port matches the mode: 587 is STARTTLS, 465 is implicit TLS."
+        );
+    }
+    return msg;
+}
+
+/**
+ * Check the credentials without sending anything.
+ *
+ * Called at boot so a wrong password is reported the moment the server starts,
+ * rather than the first time a student cannot log in and asks why no code
+ * arrived. verify() performs the full handshake and authentication, so it
+ * catches exactly what a real send would.
+ */
+export async function verifyMail() {
+    if (!transport) return { ok: false, configured: false };
+    try {
+        await transport.verify();
+        return { ok: true, configured: true };
+    } catch (err) {
+        return { ok: false, configured: true, error: explainMailError(err), raw: err.message };
     }
 }
 

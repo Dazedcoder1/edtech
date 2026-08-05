@@ -1,0 +1,39 @@
+# Local development database only. Not used in production.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# Gives you an empty PostgreSQL on localhost:5433. The backend creates every
+# table it needs on first boot, so there is nothing to import — you just
+# register a fresh account through the UI.
+#
+# Port 5433, not 5432: if you ever install PostgreSQL natively on Windows it
+# takes 5432, and two servers fighting over one port produces connection errors
+# that look like a broken app rather than a port clash.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: edtech-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: edtech
+      # Local throwaway credential. This database is reachable only from your
+      # own machine and holds nothing real, so the password is committed on
+      # purpose — it is not a secret, and inventing one per developer just
+      # means everyone's .env drifts.
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: edtech
+    ports:
+      - "5433:5432"
+    volumes:
+      # Survives container restarts, so your test courses and accounts persist.
+      # Delete it to start clean:  docker volume rm edtech_dev_pgdata
+      - dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U edtech -d edtech"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dev_pgdata:

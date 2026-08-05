@@ -18,6 +18,7 @@ import quizRoutes from "./routes/quiz.js";        // ✅ Quiz routes
 import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
 import notificationRoutes from "./routes/notifications.js";
 import supportRoutes from "./routes/support.js";
+import { verifyMail } from "./utils/mailer.js";
 
 // Import config
 import pool from "./config/database.js";
@@ -128,6 +129,58 @@ async function setupDatabase() {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+
+        /*
+         * enrollments and folders were never created here.
+         *
+         * Both are read and written all over the codebase, but the only
+         * statement that mentioned enrollments was an ALTER adding expires_at.
+         * On the production database that works, because the tables were made
+         * by hand at some point; on a fresh one the ALTER throws, the catch
+         * below swallows it, and every enrolment query fails afterwards with a
+         * "relation does not exist" that looks nothing like the real cause.
+         *
+         * That made the schema impossible to stand up from scratch — which is
+         * to say, impossible to develop against anything but production.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS enrollments (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                status VARCHAR(50) DEFAULT 'pending',
+                payment_status VARCHAR(50) DEFAULT 'pending',
+                payment_id VARCHAR(255),
+                amount_paid DECIMAL(10,2) DEFAULT 0,
+                enrolled_at TIMESTAMPTZ DEFAULT NOW(),
+                expires_at TIMESTAMPTZ DEFAULT NULL,
+                last_accessed TIMESTAMPTZ DEFAULT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                -- Required: the purchase and renewal paths both rely on
+                -- ON CONFLICT (user_id, course_id) to re-activate a lapsed
+                -- enrolment rather than inserting a second row.
+                UNIQUE (user_id, course_id)
+            )
+        `);
+
+        // Tabs within a module. content_items, quizzes and test_files all carry
+        // a folder_id pointing here.
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS folders (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                module_id UUID NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        // Installs that predate this block may lack the newer columns.
+        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS last_accessed TIMESTAMPTZ`);
+        await pool.query(`ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
+        await pool.query(`ALTER TABLE content_items ADD COLUMN IF NOT EXISTS folder_id UUID`);
+        await pool.query(`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS folder_id UUID`);
+        await pool.query(`ALTER TABLE content_items ADD COLUMN IF NOT EXISTS priority INT DEFAULT 0`);
 
         await pool.query(`
             CREATE TABLE IF NOT EXISTS video_progress (
@@ -684,5 +737,48 @@ app.listen(PORT, () => {
     console.log(`   - /api/analytics`);
     console.log(`   - /api/quiz`);
     console.log(`   - /api/test`);  // ✅ Added test route
-    console.log(`${"=".repeat(70)}\n`);
+    console.log(`   - /api/notifications`);
+    console.log(`   - /api/support`);
+
+    /*
+     * Configuration the operator needs to know about, reported at boot.
+     *
+     * Both of these degrade quietly rather than failing: without SMTP a reset
+     * code goes to this log instead of an inbox, and without Razorpay the paid
+     * checkout returns "not available". Neither produces an error anyone would
+     * notice until a user reports it, so they are surfaced here where the
+     * person who can fix them is already looking.
+     */
+    console.log("");
+    console.log(`💳 Payments: ${process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET ? "enabled" : "DISABLED — free courses still work"}`);
+
+    /*
+     * Authenticate against the mail server at boot.
+     *
+     * Without this, wrong SMTP credentials are only discovered when a student
+     * requests a reset code that never arrives — and the failure is a log line
+     * nobody is watching, because the UI reports success either way (it has to:
+     * telling the caller whether an address exists would leak who is
+     * registered).
+     *
+     * Deliberately not awaited: mail is not required for the server to serve
+     * requests, and a slow or unreachable SMTP host should not delay startup.
+     */
+    verifyMail().then((result) => {
+        if (!result.configured) {
+            console.log(`✉️  Email:   NOT CONFIGURED — reset codes print to this log`);
+        } else if (result.ok) {
+            console.log(`✉️  Email:   ✅ connected to ${process.env.SMTP_HOST} as ${process.env.SMTP_USER}`);
+        } else {
+            console.log(
+                `\n${"=".repeat(70)}\n` +
+                `❌ Email:   SMTP is configured but the login was REJECTED.\n` +
+                `   Password reset codes will not be delivered.\n\n` +
+                `${result.error}\n\n` +
+                `   Raw error: ${result.raw}\n` +
+                `${"=".repeat(70)}`
+            );
+        }
+        console.log(`${"=".repeat(70)}\n`);
+    });
 });
