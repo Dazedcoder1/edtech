@@ -467,6 +467,62 @@ async function setupDatabase() {
         await pool.query(`DELETE FROM password_resets WHERE created_at < NOW() - INTERVAL '7 days'`);
 
         // ============================================
+        // EMAIL VERIFICATION
+        // ============================================
+        /*
+         * A separate table from password_resets, not a `purpose` column on it.
+         *
+         * The two look alike but differ where it matters: a reset code lets
+         * someone take over an account, a verification code only confirms an
+         * address they already control. Sharing a table would mean one query
+         * bug could let a verification code be spent as a reset — the kind of
+         * mistake that is invisible until it is exploited.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS email_verifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                email VARCHAR(255) NOT NULL,
+                code_hash TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                attempts INT DEFAULT 0,
+                consumed_at TIMESTAMPTZ DEFAULT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_email_verifications_user
+                ON email_verifications(user_id, created_at DESC)
+        `);
+
+        await pool.query(`DELETE FROM email_verifications WHERE created_at < NOW() - INTERVAL '7 days'`);
+
+        /*
+         * The address is stored on the verification row as well as the user.
+         *
+         * Without it, a code issued for one address could be redeemed after
+         * the address changed, marking the new one verified on the strength of
+         * an email sent to the old one.
+         */
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE`);
+
+        /*
+         * Everyone who already has an account keeps it usable.
+         *
+         * Existing accounts were created before verification existed, so their
+         * addresses are unverified by definition — but flagging them all would
+         * put a warning banner in front of every current user for something
+         * they had no way to do. They are grandfathered in; the requirement
+         * applies to accounts created from here on.
+         */
+        await pool.query(`
+            UPDATE users SET email_verified = TRUE
+             WHERE email IS NOT NULL AND email_verified IS NOT TRUE
+               AND created_at < NOW()
+        `);
+
+        // ============================================
         // NOTIFICATIONS
         // ============================================
         /*

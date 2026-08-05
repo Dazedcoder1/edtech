@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import HelpDeskPanel from './HelpDeskPanel.jsx';
+import VerifyEmailBanner from '../auth/VerifyEmailBanner.jsx';
 
 const transitionColors = [
   "#E63946", // Red
@@ -119,6 +120,10 @@ export default function MainLayout() {
           </button>
         </div>
       </nav>
+
+      {/* Above the page content, below the nav. Renders nothing for verified
+          accounts, so it costs nothing for everyone else. */}
+      <VerifyEmailBanner />
 
      <main className="max-w-[1400px] mx-auto px-6 pt-3 md:pt-10 relative">
         <AnimatePresence mode="wait">

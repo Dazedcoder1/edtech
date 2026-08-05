@@ -15,7 +15,7 @@ import {
     BOARDS,
     STATES,
 } from "../utils/studentProfile.js";
-import { sendMail, passwordResetEmail } from "../utils/mailer.js";
+import { sendMail, passwordResetEmail, verifyEmailMessage } from "../utils/mailer.js";
 
 const router = express.Router();
 
@@ -30,6 +30,184 @@ const publicUser = (u) => ({
     board: u.board,
     state: u.state,
     school: u.school,
+    // Drives the "confirm your email" banner. `!== false` rather than a bare
+    // read: rows selected before this column existed return undefined, and an
+    // undefined should not put a warning in front of an existing user.
+    email_verified: u.email_verified !== false,
+});
+
+// ============================================================
+// EMAIL VERIFICATION
+// ============================================================
+
+const VERIFY_TTL_MINUTES = 30;
+const VERIFY_MAX_ATTEMPTS = 5;
+const VERIFY_MAX_PER_HOUR = 5;
+
+/**
+ * Issue a fresh verification code and email it.
+ *
+ * Any earlier unused code is retired first, so two codes in an inbox can never
+ * both work — the newest is always the right one.
+ *
+ * @param {{id: string, name: string, email: string}} user
+ */
+async function issueVerificationCode(user) {
+    if (!user?.email) return { ok: false, reason: "no-email" };
+
+    const recent = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM email_verifications
+          WHERE user_id = $1 AND created_at > NOW() - INTERVAL '1 hour'`,
+        [user.id]
+    );
+    if (recent.rows[0].n >= VERIFY_MAX_PER_HOUR) {
+        return { ok: false, reason: "rate-limited" };
+    }
+
+    await pool.query(
+        `UPDATE email_verifications SET consumed_at = NOW()
+          WHERE user_id = $1 AND consumed_at IS NULL`,
+        [user.id]
+    );
+
+    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+    const codeHash = await bcrypt.hash(code, 10);
+
+    await pool.query(
+        `INSERT INTO email_verifications (user_id, email, code_hash, expires_at)
+         VALUES ($1, $2, $3, NOW() + ($4 || ' minutes')::interval)`,
+        [user.id, user.email, codeHash, String(VERIFY_TTL_MINUTES)]
+    );
+
+    const mail = verifyEmailMessage({ name: user.name, code, minutes: VERIFY_TTL_MINUTES });
+    await sendMail({ to: user.email, ...mail });
+
+    return { ok: true };
+}
+
+/**
+ * POST /api/auth/send-verification
+ *
+ * Resend the code to the signed-in user's own address. Authenticated, so
+ * unlike the password reset there is no enumeration concern — the caller has
+ * already proved who they are.
+ */
+router.post("/send-verification", authMiddleware, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, name, email, email_verified FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (rows.length === 0) return res.status(404).json({ error: "User not found" });
+
+        const user = rows[0];
+        if (!user.email) {
+            return res.status(400).json({ error: "There is no email address on your account." });
+        }
+        if (user.email_verified) {
+            // Not an error: a stale tab or a double tap should not look broken.
+            return res.json({ success: true, alreadyVerified: true, message: "Your email is already confirmed." });
+        }
+
+        const result = await issueVerificationCode(user);
+        if (!result.ok && result.reason === "rate-limited") {
+            return res.status(429).json({
+                error: "Too many codes requested. Please wait an hour and try again.",
+            });
+        }
+
+        res.json({ success: true, message: `A code has been sent to ${user.email}.` });
+    } catch (err) {
+        console.error("Send verification error:", err);
+        res.status(500).json({ error: "Could not send the code. Please try again." });
+    }
+});
+
+/**
+ * POST /api/auth/verify-email
+ * Body: { code }
+ */
+router.post("/verify-email", authMiddleware, async (req, res) => {
+    try {
+        const digits = String(req.body.code ?? "").trim();
+        if (!/^\d{6}$/.test(digits)) {
+            return res.status(400).json({ error: "Enter the 6-digit code from your email." });
+        }
+
+        const { rows: users } = await pool.query(
+            `SELECT id, email, email_verified FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (users.length === 0) return res.status(404).json({ error: "User not found" });
+        if (users[0].email_verified) {
+            return res.json({ success: true, alreadyVerified: true });
+        }
+
+        const { rows } = await pool.query(
+            `SELECT id, code_hash, attempts, email
+               FROM email_verifications
+              WHERE user_id = $1 AND consumed_at IS NULL AND expires_at > NOW()
+              ORDER BY created_at DESC
+              LIMIT 1`,
+            [req.user.id]
+        );
+        if (rows.length === 0) {
+            return res.status(400).json({ error: "That code has expired. Send a new one." });
+        }
+
+        const row = rows[0];
+
+        /*
+         * The code was issued for a specific address.
+         *
+         * If the account's email changed after the code was sent, redeeming it
+         * would confirm the new address on the strength of a message delivered
+         * to the old one — which is precisely the check verification exists to
+         * perform.
+         */
+        if (row.email !== users[0].email) {
+            await pool.query(`UPDATE email_verifications SET consumed_at = NOW() WHERE id = $1`, [row.id]);
+            return res.status(400).json({ error: "Your email address changed. Send a new code." });
+        }
+
+        if (row.attempts >= VERIFY_MAX_ATTEMPTS) {
+            await pool.query(`UPDATE email_verifications SET consumed_at = NOW() WHERE id = $1`, [row.id]);
+            return res.status(429).json({ error: "Too many wrong codes. Send a new one." });
+        }
+
+        const matches = await bcrypt.compare(digits, row.code_hash);
+        if (!matches) {
+            await pool.query(`UPDATE email_verifications SET attempts = attempts + 1 WHERE id = $1`, [row.id]);
+            const left = VERIFY_MAX_ATTEMPTS - (row.attempts + 1);
+            return res.status(400).json({
+                error: left > 0
+                    ? `That code is not correct. ${left} attempt${left === 1 ? "" : "s"} left.`
+                    : "That code is not correct. Send a new one.",
+            });
+        }
+
+        // Atomic claim, so a double-tapped button cannot consume two codes.
+        const claim = await pool.query(
+            `UPDATE email_verifications SET consumed_at = NOW()
+              WHERE id = $1 AND consumed_at IS NULL RETURNING id`,
+            [row.id]
+        );
+        if (claim.rowCount === 0) {
+            return res.status(400).json({ error: "That code has already been used." });
+        }
+
+        const { rows: updated } = await pool.query(
+            `UPDATE users SET email_verified = TRUE, updated_at = NOW()
+              WHERE id = $1
+            RETURNING id, name, email, phone, role, class_level, board, state, school, email_verified`,
+            [req.user.id]
+        );
+
+        res.json({ success: true, user: publicUser(updated[0]) });
+    } catch (err) {
+        console.error("Verify email error:", err);
+        res.status(500).json({ error: "Could not verify that code. Please try again." });
+    }
 });
 
 // ROUTE 1: REGISTER
@@ -57,8 +235,22 @@ router.post("/register", async (req, res) => {
         const phoneCheck = normalizePhone(req.body.phone);
         if (!phoneCheck.ok) return res.status(400).json({ error: phoneCheck.error });
 
+        /*
+         * Email is required now, where it was optional.
+         *
+         * It is the only channel that can reset a forgotten password: an
+         * account with a mobile number alone has no way back in, and the
+         * support burden of resetting those by hand falls on the teacher.
+         * Mobile remains the primary login identifier; email is the recovery
+         * address.
+         */
         const emailCheck = normalizeEmail(req.body.email);
         if (!emailCheck.ok) return res.status(400).json({ error: emailCheck.error });
+        if (!emailCheck.email) {
+            return res.status(400).json({
+                error: "An email address is required — it is how you reset a forgotten password.",
+            });
+        }
 
         /*
          * Academic fields are required for students and ignored for educators.
@@ -89,9 +281,9 @@ router.post("/register", async (req, res) => {
         const passwordHash = await bcrypt.hash(password, 10);
 
         const result = await pool.query(`
-            INSERT INTO users (name, email, phone, password_hash, role, class_level, board, state, school)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id, name, email, phone, role, class_level, board, state, school, created_at
+            INSERT INTO users (name, email, phone, password_hash, role, class_level, board, state, school, email_verified)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+            RETURNING id, name, email, phone, role, class_level, board, state, school, email_verified, created_at
         `, [
             String(name).trim(),
             emailCheck.email,
@@ -105,6 +297,17 @@ router.post("/register", async (req, res) => {
         ]);
 
         const user = result.rows[0];
+
+        /*
+         * Send the code, but do not make the signup depend on it.
+         *
+         * The account exists and the token below is already valid, so a mail
+         * server having a bad minute must not turn a completed registration
+         * into an error. The user lands in the app and can resend from there.
+         */
+        await issueVerificationCode(user).catch((err) =>
+            console.error("[register] could not send verification code:", err.message)
+        );
 
         const token = jwt.sign(
             { id: user.id, email: user.email, role: user.role, name: user.name },
@@ -197,7 +400,8 @@ router.post("/login", async (req, res) => {
 router.get("/me", authMiddleware, async (req, res) => {
     try {
         const result = await pool.query(
-            `SELECT id, name, email, phone, role, class_level, board, state, school, created_at
+            `SELECT id, name, email, phone, role, class_level, board, state, school,
+                    email_verified, created_at
                FROM users WHERE id = $1`,
             [req.user.id]
         );

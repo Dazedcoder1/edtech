@@ -181,3 +181,43 @@ export function passwordResetEmail({ name, code, minutes }) {
 
     return { subject, text, html };
 }
+
+/**
+ * The address-confirmation message sent after signup.
+ *
+ * Worded differently from the reset email on purpose. "If you didn't request
+ * this, ignore it" is right for a reset, where an unexpected message means
+ * someone tried to get in. Here an unexpected message means someone typed the
+ * wrong address, and the useful advice is different.
+ */
+export function verifyEmailMessage({ name, code, minutes }) {
+    const subject = `Your verification code: ${code}`;
+
+    const text = [
+        `Hi ${name || "there"},`,
+        ``,
+        `Welcome. Your verification code is ${code}`,
+        ``,
+        `Enter it to confirm this email address. It expires in ${minutes} minutes.`,
+        ``,
+        `If you didn't create an account, someone may have typed this address by`,
+        `mistake — you can ignore this email and nothing will happen.`,
+    ].join("\n");
+
+    const html = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px;">
+          <p>Hi ${name || "there"},</p>
+          <p>Welcome. Your verification code is:</p>
+          <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; margin: 24px 0;">
+            ${code}
+          </p>
+          <p>Enter it to confirm this email address. It expires in ${minutes} minutes.</p>
+          <p style="color: #666; font-size: 14px;">
+            If you didn't create an account, someone may have typed this address by
+            mistake — you can ignore this email and nothing will happen.
+          </p>
+        </div>
+    `;
+
+    return { subject, text, html };
+}
