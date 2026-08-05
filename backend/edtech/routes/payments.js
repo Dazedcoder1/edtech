@@ -8,10 +8,49 @@ import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
 
-const razorpayInstance = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_Sk6w4yGg7PI7Ol",
-    key_secret: process.env.RAZORPAY_KEY_SECRET || "er6IT32WoapaOyzSy3HMlGrO"
-});
+/*
+ * Keys come from the environment, with no hardcoded fallback.
+ *
+ * Both used to be literals in this file, so every clone and every push carried
+ * a working key_secret — the value Razorpay uses to sign and verify payments.
+ *
+ * Missing keys disable paid enrolment rather than stopping the server. The
+ * alternative, throwing at import, would take the whole platform down over a
+ * misconfigured payment provider: nobody could watch a video or sit a quiz
+ * because a variable was missing. Free courses do not touch this file at all.
+ */
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+
+export const paymentsConfigured = Boolean(RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET);
+
+if (!paymentsConfigured) {
+    console.warn(
+        "⚠️  RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set.\n" +
+        "   Paid enrolment is disabled; free courses are unaffected.\n" +
+        "   Set both in backend/edtech/.env to enable payments."
+    );
+}
+
+const razorpayInstance = paymentsConfigured
+    ? new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET })
+    : null;
+
+/**
+ * Refuse payment routes cleanly when the provider is not set up.
+ *
+ * 503, not 500: this is a configuration state the operator can fix, not a bug,
+ * and the message says so rather than surfacing "Cannot read properties of
+ * null" from somewhere deep in the SDK.
+ */
+function requirePayments(req, res, next) {
+    if (!paymentsConfigured) {
+        return res.status(503).json({
+            error: "Online payment is not available right now. Please contact your teacher.",
+        });
+    }
+    next();
+}
 
 // Route 1: Create Razorpay Order
 router.post("/create-order", authMiddleware, async (req, res) => {
@@ -109,8 +148,22 @@ router.post("/create-order", authMiddleware, async (req, res) => {
             ORDER BY created_at DESC LIMIT 1
         `, [userId, courseId]);
         
+        /*
+         * Checked here, not on the route.
+         *
+         * Everything above this line is the free-enrolment path, which never
+         * touches Razorpay — gating the whole endpoint would break free courses
+         * on an install that simply has no payment provider.
+         */
+        if (!paymentsConfigured) {
+            await client.query('ROLLBACK');
+            return res.status(503).json({
+                error: "Online payment is not available right now. Please contact your teacher.",
+            });
+        }
+
         let orderId;
-        
+
         if (pendingOrder.rows.length > 0) {
             orderId = pendingOrder.rows[0].order_id;
         } else {
@@ -160,7 +213,9 @@ router.post("/create-order", authMiddleware, async (req, res) => {
         res.json({
             success: true,
             orderId: orderId,
-            keyId: process.env.RAZORPAY_KEY_ID || "rzp_test_Sk6w4yGg7PI7Ol",
+            // The key id is public — the checkout widget needs it in the
+            // browser. The secret never leaves the server.
+            keyId: RAZORPAY_KEY_ID,
             amount: courseData.price,
             currency: "INR",
             courseTitle: courseData.title
@@ -176,7 +231,7 @@ router.post("/create-order", authMiddleware, async (req, res) => {
 });
 
 // Route 2: Verify Payment and Enroll User
-router.post("/verify", authMiddleware, async (req, res) => {
+router.post("/verify", authMiddleware, requirePayments, async (req, res) => {
     const { orderId, paymentId, signature, courseId } = req.body;
     const userId = req.user.id;
     
@@ -207,7 +262,7 @@ router.post("/verify", authMiddleware, async (req, res) => {
         
         const body = orderId + "|" + paymentId;
         const expectedSignature = crypto
-            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "er6IT32WoapaOyzSy3HMlGrO")
+            .createHmac("sha256", RAZORPAY_KEY_SECRET)
             .update(body.toString())
             .digest("hex");
         

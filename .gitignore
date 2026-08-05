@@ -1,6 +1,19 @@
+# Secrets. .env.example is committed; .env never is.
 .env
+.env.*
+!.env.example
+
 node_modules/
 temp_videos/
+dist/
 .DS_Store
 *.log
-node_modules/
+
+# Whole-repository code dumps.
+#
+# combined_project_code.txt was a concatenation of every source file, which
+# meant it also contained every credential that was hardcoded at the time —
+# and it was committed, so those values are in the git history. Regenerating it
+# would re-commit whatever secrets exist on the day it is made.
+combined_project_code.txt
+*_project_code.txt

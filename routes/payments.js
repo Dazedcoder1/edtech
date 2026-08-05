@@ -6,9 +6,16 @@ import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
 
+/*
+ * Dead copy — see the note in ../config/database.js. The deployed payments
+ * code is backend/edtech/routes/payments.js.
+ *
+ * The literal key_id and key_secret that were here have been removed. A key
+ * secret in source is a signing key anyone with the repository can use.
+ */
 const razorpayInstance = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || "rzp_test_Sk6w4yGg7PI7Ol",
-    key_secret: process.env.RAZORPAY_KEY_SECRET || "er6IT32WoapaOyzSy3HMlGrO"
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
 // Route 1: Create Razorpay Order
@@ -83,7 +90,7 @@ router.post("/create-order", authMiddleware, async (req, res) => {
         res.json({
             success: true,
             orderId: orderId,
-            keyId: process.env.RAZORPAY_KEY_ID || "rzp_test_Sk6w4yGg7PI7Ol",
+            keyId: process.env.RAZORPAY_KEY_ID,
             amount: courseData.price,
             currency: "INR",
             courseTitle: courseData.title
@@ -130,7 +137,7 @@ router.post("/verify", authMiddleware, async (req, res) => {
         
         const body = orderId + "|" + paymentId;
         const expectedSignature = crypto
-            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "er6IT32WoapaOyzSy3HMlGrO")
+            .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
             .update(body.toString())
             .digest("hex");
         
