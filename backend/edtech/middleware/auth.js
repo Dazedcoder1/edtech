@@ -5,6 +5,47 @@ import pool from "../config/database.js";
 import { JWT_SECRET } from "../config/jwt.js";
 
 /**
+ * The scope carried by a token issued to an account that has not confirmed its
+ * email. Must match VERIFY_SCOPE in routes/auth.js.
+ *
+ * Declared here rather than imported to avoid a cycle: routes/auth.js already
+ * imports this middleware.
+ */
+const VERIFY_SCOPE = "verify-email";
+
+/**
+ * The only paths a verify-scoped token may reach.
+ *
+ * Matched against the mounted path, so these are relative to /api/auth. Kept
+ * as an exact list rather than a prefix: "anything under /auth" would include
+ * profile and password changes, which an unconfirmed account has no business
+ * touching.
+ */
+const VERIFY_SCOPE_ALLOWED = new Set(["/send-verification", "/verify-email"]);
+
+/**
+ * Refuse a scoped token outside its two permitted routes.
+ *
+ * This is what makes mandatory verification real rather than cosmetic. The
+ * client could otherwise keep the token it was handed at login and call any
+ * endpoint it liked; the UI hiding the app would be a suggestion, not a rule.
+ *
+ * @returns {boolean} true if the request was rejected
+ */
+function rejectIfScoped(decoded, req, res) {
+    if (decoded?.scope !== VERIFY_SCOPE) return false;
+    if (VERIFY_SCOPE_ALLOWED.has(req.path)) return false;
+
+    res.status(403).json({
+        // A distinct code so the client can route to the verification screen
+        // instead of showing a generic "access denied" that suggests a bug.
+        code: "EMAIL_NOT_VERIFIED",
+        error: "Confirm your email address to continue.",
+    });
+    return true;
+}
+
+/**
  * Authenticate only. No course, module or content resolution.
  *
  * authMiddleware below does two jobs: it verifies the token, and it infers
@@ -48,6 +89,8 @@ export async function authOnly(req, res, next) {
         } catch {
             return res.status(401).json({ error: "Invalid or expired token" });
         }
+
+        if (rejectIfScoped(decoded, req, res)) return;
 
         req.user = {
             id: decoded.id,
@@ -100,7 +143,11 @@ async function authMiddleware(req, res, next) {
           console.log('❌ Invalid token:', err.message);
           return res.status(401).json({ error: "Invalid or expired token" });
       }
-      
+
+      // Same gate as authOnly: a verify-scoped token gets no further than the
+      // two verification routes, whichever middleware guards the request.
+      if (rejectIfScoped(decoded, req, res)) return;
+
       // Basic user info from token
       req.user = {
           id: decoded.id,

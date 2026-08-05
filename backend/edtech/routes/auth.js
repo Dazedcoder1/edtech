@@ -15,7 +15,7 @@ import {
     BOARDS,
     STATES,
 } from "../utils/studentProfile.js";
-import { sendMail, passwordResetEmail, verifyEmailMessage } from "../utils/mailer.js";
+import { sendMail, passwordResetEmail, verifyEmailMessage, loginCodeEmail } from "../utils/mailer.js";
 
 const router = express.Router();
 
@@ -42,7 +42,47 @@ const publicUser = (u) => ({
 
 const VERIFY_TTL_MINUTES = 30;
 const VERIFY_MAX_ATTEMPTS = 5;
-const VERIFY_MAX_PER_HOUR = 5;
+
+/*
+ * Codes per account per hour.
+ *
+ * Raised from 5 once every login began needing one. Five was right when a code
+ * meant "confirm your address", which happens once — as a sign-in limit it
+ * locks out anyone who logs in from a few devices in a morning, or who closes
+ * the tab and starts again a couple of times. Fifteen still caps mail volume
+ * to a single inbox, which is the abuse this guards against.
+ */
+const VERIFY_MAX_PER_HOUR = 15;
+
+/**
+ * The scope claim carried by a token that may only finish verification.
+ *
+ * Gating an unverified account in the frontend alone would be decoration: the
+ * token issued at login would be a full session token, and anyone willing to
+ * open DevTools could call the API with it directly. Instead an unverified
+ * login gets a token that the middleware refuses everywhere except the two
+ * verification routes, so the gate holds no matter what the client does.
+ */
+export const VERIFY_SCOPE = "verify-email";
+
+/** Short-lived: it exists to complete one task, not to hold a session open. */
+const VERIFY_TOKEN_TTL = "30m";
+
+function verifyScopedToken(user) {
+    return jwt.sign(
+        { id: user.id, email: user.email, role: user.role, name: user.name, scope: VERIFY_SCOPE },
+        JWT_SECRET,
+        { expiresIn: VERIFY_TOKEN_TTL }
+    );
+}
+
+function fullToken(user) {
+    return jwt.sign(
+        { id: user.id, email: user.email, role: user.role, name: user.name },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES_IN }
+    );
+}
 
 /**
  * Issue a fresh verification code and email it.
@@ -51,8 +91,12 @@ const VERIFY_MAX_PER_HOUR = 5;
  * both work — the newest is always the right one.
  *
  * @param {{id: string, name: string, email: string}} user
+ * @param {{purpose?: 'login'|'confirm'}} [options] chooses the email wording.
+ *   The mechanism is identical either way; only what the message says differs,
+ *   and "confirm your address" reads as a mistake to someone who signed up
+ *   months ago and is simply logging in.
  */
-async function issueVerificationCode(user) {
+async function issueVerificationCode(user, { purpose = "confirm" } = {}) {
     if (!user?.email) return { ok: false, reason: "no-email" };
 
     const recent = await pool.query(
@@ -79,7 +123,9 @@ async function issueVerificationCode(user) {
         [user.id, user.email, codeHash, String(VERIFY_TTL_MINUTES)]
     );
 
-    const mail = verifyEmailMessage({ name: user.name, code, minutes: VERIFY_TTL_MINUTES });
+    const mail = purpose === "login"
+        ? loginCodeEmail({ name: user.name, code, minutes: VERIFY_TTL_MINUTES })
+        : verifyEmailMessage({ name: user.name, code, minutes: VERIFY_TTL_MINUTES });
     await sendMail({ to: user.email, ...mail });
 
     return { ok: true };
@@ -104,12 +150,18 @@ router.post("/send-verification", authMiddleware, async (req, res) => {
         if (!user.email) {
             return res.status(400).json({ error: "There is no email address on your account." });
         }
-        if (user.email_verified) {
-            // Not an error: a stale tab or a double tap should not look broken.
-            return res.json({ success: true, alreadyVerified: true, message: "Your email is already confirmed." });
-        }
-
-        const result = await issueVerificationCode(user);
+        /*
+         * A verified account can still need a code.
+         *
+         * This used to return early for them, on the assumption that a
+         * confirmed address had nothing left to do. Since every login is now
+         * challenged, that early return broke the Resend button for exactly
+         * the people who use the app most — their code screen is a second
+         * factor, not a confirmation.
+         */
+        const result = await issueVerificationCode(user, {
+            purpose: user.email_verified ? "login" : "confirm",
+        });
         if (!result.ok && result.reason === "rate-limited") {
             return res.status(429).json({
                 error: "Too many codes requested. Please wait an hour and try again.",
@@ -139,9 +191,19 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
             [req.user.id]
         );
         if (users.length === 0) return res.status(404).json({ error: "User not found" });
-        if (users[0].email_verified) {
-            return res.json({ success: true, alreadyVerified: true });
-        }
+
+        /*
+         * There is deliberately no shortcut for an already-verified account.
+         *
+         * An earlier version returned a session here without checking anything,
+         * on the reasoning that a confirmed address has nothing left to prove.
+         * That was fine while this endpoint only confirmed addresses. It is a
+         * hole now that it is also the second factor at login: anyone holding a
+         * scoped token — which is what a correct password alone earns — could
+         * call this and be handed a full session without ever seeing the code.
+         *
+         * Every path through this route now requires a valid code.
+         */
 
         const { rows } = await pool.query(
             `SELECT id, code_hash, attempts, email
@@ -203,7 +265,18 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
             [req.user.id]
         );
 
-        res.json({ success: true, user: publicUser(updated[0]) });
+        /*
+         * Trade the verify-scoped token for a real session.
+         *
+         * This is the only place that upgrade happens. Without it the client
+         * would hold a token the middleware refuses everywhere, and a
+         * successful verification would look like being logged out.
+         */
+        res.json({
+            success: true,
+            token: fullToken(updated[0]),
+            user: publicUser(updated[0]),
+        });
     } catch (err) {
         console.error("Verify email error:", err);
         res.status(500).json({ error: "Could not verify that code. Please try again." });
@@ -309,16 +382,18 @@ router.post("/register", async (req, res) => {
             console.error("[register] could not send verification code:", err.message)
         );
 
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            JWT_SECRET,
-            { expiresIn: JWT_EXPIRES_IN }
-        );
-
+        /*
+         * A verify-scoped token, not a session.
+         *
+         * The account exists, but it cannot be used until the address is
+         * confirmed — so what comes back is only good for submitting a code.
+         * The full token is issued by /verify-email once that succeeds.
+         */
         res.status(201).json({
             success: true,
-            message: "Account created successfully",
-            token,
+            message: "Account created. Check your email for a verification code.",
+            requiresVerification: true,
+            token: verifyScopedToken(user),
             user: publicUser(user),
         });
 
@@ -376,16 +451,46 @@ router.post("/login", async (req, res) => {
             return res.status(401).json({ error: "Invalid login or password" });
         }
 
-        const token = jwt.sign(
-            { id: user.id, email: user.email, role: user.role, name: user.name },
-            JWT_SECRET,
-            { expiresIn: JWT_EXPIRES_IN }
-        );
+        /*
+         * Every login is challenged, not just unverified ones.
+         *
+         * A correct password now earns only a verify-scoped token: proof of
+         * something you know, waiting on proof of something you have. The
+         * session is issued by /verify-email once the emailed code is entered.
+         *
+         * The one exception is an account with no email at all — those predate
+         * the requirement and have no second factor available. Refusing them
+         * would lock existing users out of their own accounts over a rule they
+         * were never given the chance to satisfy.
+         */
+        if (!user.email) {
+            return res.json({
+                success: true,
+                message: "Login successful",
+                token: fullToken(user),
+                user: publicUser(user),
+            });
+        }
+
+        const sent = await issueVerificationCode(user, { purpose: "login" }).catch((err) => {
+            console.error("[login] could not send login code:", err.message);
+            return { ok: false, reason: "send-failed" };
+        });
+
+        if (!sent.ok && sent.reason === "rate-limited") {
+            return res.status(429).json({
+                error: "Too many sign-in codes requested. Please wait an hour and try again.",
+            });
+        }
 
         res.json({
             success: true,
-            message: "Login successful",
-            token,
+            requiresVerification: true,
+            // Distinguishes a routine second factor from an unfinished signup,
+            // so the screen can say the right thing.
+            reason: user.email_verified === false ? "confirm-email" : "two-factor",
+            message: `We've sent a sign-in code to ${user.email}.`,
+            token: verifyScopedToken(user),
             user: publicUser(user),
         });
 

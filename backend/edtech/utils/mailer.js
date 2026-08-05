@@ -183,6 +183,46 @@ export function passwordResetEmail({ name, code, minutes }) {
 }
 
 /**
+ * The second-factor code sent on every sign-in.
+ *
+ * Separate from the confirmation message because the reader's situation is
+ * different: they are mid-login and expecting this, and the sentence that
+ * matters is the warning — an unexpected sign-in code means someone else has
+ * their password, which is urgent in a way an unexpected signup email is not.
+ */
+export function loginCodeEmail({ name, code, minutes }) {
+    const subject = `Your sign-in code: ${code}`;
+
+    const text = [
+        `Hi ${name || "there"},`,
+        ``,
+        `Your sign-in code is ${code}`,
+        ``,
+        `It expires in ${minutes} minutes and can be used once.`,
+        ``,
+        `If you are not trying to sign in, someone else may know your password.`,
+        `Change it as soon as you can.`,
+    ].join("\n");
+
+    const html = `
+        <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px;">
+          <p>Hi ${name || "there"},</p>
+          <p>Your sign-in code is:</p>
+          <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; margin: 24px 0;">
+            ${code}
+          </p>
+          <p>It expires in ${minutes} minutes and can be used once.</p>
+          <p style="color: #b3261e; font-size: 14px;">
+            If you are not trying to sign in, someone else may know your password.
+            Change it as soon as you can.
+          </p>
+        </div>
+    `;
+
+    return { subject, text, html };
+}
+
+/**
  * The address-confirmation message sent after signup.
  *
  * Worded differently from the reset email on purpose. "If you didn't request

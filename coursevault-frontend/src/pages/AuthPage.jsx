@@ -3,10 +3,22 @@ import { Bot, BookOpen } from 'lucide-react';
 import LoginForm from '../components/auth/LoginForm';
 import RegisterForm from '../components/auth/RegisterForm';
 import ForgotPasswordForm from '../components/auth/ForgotPasswordForm';
+import VerifyEmailStep from '../components/auth/VerifyEmailStep';
+import { useAuth } from '../context/AuthContext';
 
 export default function AuthPage() {
   const [isLogin, setIsLogin] = useState(true);
   const [forgot, setForgot] = useState(false);
+  const { pendingVerification } = useAuth();
+
+  /*
+   * Verification outranks everything else on this card.
+   *
+   * Once the server has answered with a challenge, the token in hand is only
+   * good for submitting a code — so offering Log In or Sign Up here would lead
+   * to screens that cannot succeed.
+   */
+  const verifying = Boolean(pendingVerification);
 
   return (
     <div className="min-h-screen bg-[#F4DFD8] flex items-center justify-center p-6 relative overflow-hidden">
@@ -24,7 +36,7 @@ export default function AuthPage() {
           {/* The Log In / Sign Up switch is hidden during a reset: those tabs
               would abandon the flow mid-way with no warning, and the form has
               its own "Back to sign in" control. */}
-          {!forgot && (
+          {!forgot && !verifying && (
             <div className="flex gap-4 mb-8">
               <button
                 onClick={() => setIsLogin(true)}
@@ -41,7 +53,9 @@ export default function AuthPage() {
             </div>
           )}
 
-          {forgot ? (
+          {verifying ? (
+            <VerifyEmailStep />
+          ) : forgot ? (
             <ForgotPasswordForm
               onDone={() => {
                 setForgot(false);

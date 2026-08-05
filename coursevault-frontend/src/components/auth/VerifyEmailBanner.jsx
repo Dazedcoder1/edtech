@@ -7,15 +7,19 @@ import { useAuth } from '../../context/AuthContext.jsx';
 const RESEND_SECONDS = 45;
 
 /**
- * Prompts an unverified account to confirm its email address.
+ * A safety net for unverified accounts that are already inside the app.
  *
- * Deliberately not a blocking modal. Verification exists so password reset can
- * work later, not to gate today's lesson — locking someone out of material
- * they paid for because a code went to spam would be a worse failure than an
- * unconfirmed address.
+ * Verification is enforced at the auth page now — an unverified login gets a
+ * verify-scoped token and never reaches a route that renders this. So in
+ * normal operation this banner does not appear at all.
  *
- * Renders nothing at all for verified users, signed-out visitors, or accounts
- * with no email.
+ * It still exists for the accounts that slip between the two rules: anyone
+ * holding a full session token issued before the gate shipped, who is signed
+ * in and unverified. Without it they would carry an unconfirmed address
+ * indefinitely, since nothing else would ever ask them again.
+ *
+ * Renders nothing for verified users, signed-out visitors, or accounts with no
+ * email.
  */
 export default function VerifyEmailBanner() {
   const { user, applyProfileUpdate } = useAuth();
@@ -60,9 +64,12 @@ export default function VerifyEmailBanner() {
         method: 'POST',
         body: JSON.stringify({ code }),
       });
-      // Push the updated user into context so the banner disappears without a
-      // page reload — the confirmation should feel immediate.
-      if (res?.user) applyProfileUpdate({ user: res.user });
+      /*
+       * The token matters as much as the user here: verify-email trades the
+       * caller's token for a full session one, and dropping it would leave a
+       * verified account still holding whatever it arrived with.
+       */
+      if (res?.user) applyProfileUpdate({ user: res.user, token: res.token });
       else setDismissed(true);
     } catch (err) {
       setError(err.message || 'That code is not correct.');

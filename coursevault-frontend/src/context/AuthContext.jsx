@@ -7,6 +7,12 @@ const AuthContext = createContext();
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  /*
+   * Set when the server answered with a verification challenge rather than a
+   * session. Its presence is what makes the auth page show the code screen —
+   * `user` stays null throughout, so nothing can route into the app.
+   */
+  const [pendingVerification, setPendingVerification] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -17,6 +23,12 @@ export const AuthProvider = ({ children }) => {
           const data = await fetchAPI('/auth/me');
           setUser(data.user);
         } catch (err) {
+          /*
+           * A verify-scoped token left in storage — from a reload part-way
+           * through verification — makes /auth/me return 403, not 401, so it
+           * lands here rather than in fetchAPI's redirect. Clearing it sends
+           * them back to sign in, which is the correct place to restart.
+           */
           localStorage.removeItem('token');
         }
       }
@@ -51,9 +63,57 @@ export const AuthProvider = ({ children }) => {
       // left open across the deploy will be running the old backend contract.
       body: JSON.stringify({ identifier, email: identifier, password })
     });
+    return finishAuth(data);
+  };
+
+  /**
+   * Complete a login or registration.
+   *
+   * The server answers in one of two shapes: a session, or a verification
+   * challenge. `requiresVerification` means the token that came back is
+   * verify-scoped — good only for submitting a code — so it is stored (the
+   * verification calls need it) but no user is set and no navigation happens.
+   * Setting the user would let ProtectedRoute wave them into the app holding a
+   * token every other endpoint refuses.
+   *
+   * @returns {{requiresVerification: boolean, email?: string}}
+   */
+  const finishAuth = (data) => {
     localStorage.setItem('token', data.token);
+
+    if (data.requiresVerification) {
+      setPendingVerification({
+        email: data.user?.email,
+        name: data.user?.name,
+        // 'two-factor' for a returning user, 'confirm-email' for one who has
+        // not confirmed the address yet. Same code, different thing to say.
+        reason: data.reason || 'confirm-email',
+      });
+      return { requiresVerification: true, email: data.user?.email };
+    }
+
+    setPendingVerification(null);
     setUser(data.user);
     navigate(homeFor(data.user?.role), { replace: true });
+    return { requiresVerification: false };
+  };
+
+  /**
+   * Called once a code is accepted. The response carries a full session token
+   * in place of the scoped one.
+   */
+  const completeVerification = (data) => {
+    if (data?.token) localStorage.setItem('token', data.token);
+    setPendingVerification(null);
+    setUser(data.user);
+    navigate(homeFor(data.user?.role), { replace: true });
+  };
+
+  /** Abandon a half-finished verification and return to the sign-in form. */
+  const cancelVerification = () => {
+    localStorage.removeItem('token');
+    setPendingVerification(null);
+    setUser(null);
   };
 
   /**
@@ -70,9 +130,7 @@ export const AuthProvider = ({ children }) => {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    localStorage.setItem('token', data.token);
-    setUser(data.user);
-    navigate(homeFor(data.user?.role), { replace: true });
+    return finishAuth(data);
   };
 
   const logout = () => {
@@ -96,7 +154,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, register, logout, loading, applyProfileUpdate }}>
+    <AuthContext.Provider value={{
+      user, login, register, logout, loading, applyProfileUpdate,
+      pendingVerification, completeVerification, cancelVerification,
+    }}>
       {!loading && children}
     </AuthContext.Provider>
   );
