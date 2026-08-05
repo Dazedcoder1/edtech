@@ -499,6 +499,36 @@ async function setupDatabase() {
         await pool.query(`DELETE FROM email_verifications WHERE created_at < NOW() - INTERVAL '7 days'`);
 
         /*
+         * Codes sent to an address before any account exists.
+         *
+         * Keyed by email, not user_id — that is the whole difference. The
+         * address is confirmed during signup, while the person is still filling
+         * in the form, so there is no row in `users` to hang the code off yet.
+         *
+         * Rows here are not evidence of an account and must never be treated as
+         * such: a completed verification produces a short-lived signed proof,
+         * and the proof is what registration accepts.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS signup_email_verifications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email VARCHAR(255) NOT NULL,
+                code_hash TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                attempts INT DEFAULT 0,
+                consumed_at TIMESTAMPTZ DEFAULT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        await pool.query(`
+            CREATE INDEX IF NOT EXISTS idx_signup_email_verifications_email
+                ON signup_email_verifications(email, created_at DESC)
+        `);
+
+        await pool.query(`DELETE FROM signup_email_verifications WHERE created_at < NOW() - INTERVAL '2 days'`);
+
+        /*
          * The address is stored on the verification row as well as the user.
          *
          * Without it, a code issued for one address could be redeemed after

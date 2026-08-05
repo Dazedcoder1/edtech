@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { ArrowLeft, ArrowRight, Check } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, ArrowRight, Check, Loader, ShieldCheck } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import PasswordInput from '../ui/PasswordInput.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { fetchAPI } from '../../services/api.js';
 import { CLASS_LEVELS, BOARDS, STATES } from '../../utils/studentOptions.js';
 
 const inputClass =
@@ -64,6 +65,34 @@ export default function RegisterForm() {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  /* ---- inline email confirmation, step 1 ---- */
+  const [codeSent, setCodeSent] = useState(false);
+  const [emailCode, setEmailCode] = useState('');
+  /** The signed proof the server returns once a code is accepted. */
+  const [emailToken, setEmailToken] = useState('');
+  /** The exact address the proof was earned for. */
+  const [verifiedEmail, setVerifiedEmail] = useState('');
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeNotice, setCodeNotice] = useState('');
+  const [cooldown, setCooldown] = useState(0);
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setInterval(() => setCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [cooldown]);
+
+  /*
+   * Confirmation belongs to one address.
+   *
+   * Editing the email after confirming it must invalidate the proof —
+   * otherwise someone could verify an address they own, change the field, and
+   * register with an address they do not. The server checks this too; doing it
+   * here as well means the button state matches reality instead of failing on
+   * submit.
+   */
+  const emailConfirmed = Boolean(emailToken) && verifiedEmail === email.trim().toLowerCase();
+
   const isStudent = role === 'student';
   // Educators skip the academic step entirely, so the progress bar has to
   // reflect their shorter journey rather than promising a step they never see.
@@ -88,6 +117,7 @@ export default function RegisterForm() {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
         return "That email address doesn't look valid.";
       }
+      if (!emailConfirmed) return 'Please confirm your email address with the code we sent.';
       return null;
     }
     if (step === 1) {
@@ -102,6 +132,48 @@ export default function RegisterForm() {
       return null;
     }
     return null;
+  };
+
+  const sendEmailCode = async () => {
+    const value = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value)) {
+      setError("Enter a valid email address first.");
+      return;
+    }
+    setError('');
+    setCodeBusy(true);
+    try {
+      const data = await fetchAPI('/auth/request-signup-code', {
+        method: 'POST',
+        body: JSON.stringify({ email: value }),
+      });
+      setCodeNotice(data?.message || `We've sent a code to ${value}.`);
+      setCodeSent(true);
+      setCooldown(45);
+    } catch (err) {
+      setError(err.message || 'Could not send the code.');
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  const confirmEmailCode = async () => {
+    setError('');
+    setCodeBusy(true);
+    try {
+      const data = await fetchAPI('/auth/verify-signup-code', {
+        method: 'POST',
+        body: JSON.stringify({ email: email.trim(), code: emailCode }),
+      });
+      setEmailToken(data.emailVerifiedToken);
+      setVerifiedEmail(email.trim().toLowerCase());
+      setCodeNotice('');
+    } catch (err) {
+      setError(err.message || 'That code is not correct.');
+      setEmailCode('');
+    } finally {
+      setCodeBusy(false);
+    }
   };
 
   const next = (e) => {
@@ -129,6 +201,8 @@ export default function RegisterForm() {
         name,
         phone,
         email: email.trim(),
+        // The server refuses to create an account without this.
+        emailVerifiedToken: emailToken,
         password,
         role,
         ...(isStudent
@@ -206,17 +280,81 @@ export default function RegisterForm() {
 
           <div>
             <Label>Email Address</Label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={inputClass}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-            <p className="text-xs text-gray-500 mt-1 ml-2">
-              We'll send a code to confirm it. This is how you reset a forgotten password.
-            </p>
+            <div className="flex gap-2">
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  // Editing after confirming drops the code box back to its
+                  // starting state, so the UI never claims an address is
+                  // confirmed while a different one is typed.
+                  setCodeSent(false);
+                  setEmailCode('');
+                  setCodeNotice('');
+                }}
+                disabled={emailConfirmed}
+                className={`${inputClass} ${emailConfirmed ? 'opacity-70' : ''}`}
+                placeholder="you@example.com"
+                autoComplete="email"
+              />
+
+              {emailConfirmed ? (
+                <span className="shrink-0 flex items-center gap-1 px-3 rounded-xl border-2 border-black bg-[#A7E2D1] font-bold text-xs">
+                  <ShieldCheck size={15} strokeWidth={3} /> Confirmed
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={sendEmailCode}
+                  disabled={codeBusy || cooldown > 0}
+                  className="shrink-0 px-3 rounded-xl border-2 border-black bg-white font-bold text-xs hover:bg-[#F9E076] disabled:opacity-50"
+                >
+                  {codeBusy ? <Loader size={14} className="animate-spin" />
+                    : cooldown > 0 ? `${cooldown}s`
+                    : codeSent ? 'Resend' : 'Send code'}
+                </button>
+              )}
+            </div>
+
+            {emailConfirmed ? (
+              <button
+                type="button"
+                onClick={() => { setEmailToken(''); setVerifiedEmail(''); setCodeSent(false); }}
+                className="text-xs font-bold underline underline-offset-2 mt-1 ml-2 text-gray-600 hover:text-black"
+              >
+                Use a different email
+              </button>
+            ) : codeSent ? (
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={emailCode}
+                  onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  className={`${inputClass} text-center tracking-[0.4em] font-black`}
+                  placeholder="000000"
+                  autoComplete="one-time-code"
+                />
+                <button
+                  type="button"
+                  onClick={confirmEmailCode}
+                  disabled={codeBusy || emailCode.length !== 6}
+                  className="shrink-0 px-4 rounded-xl border-2 border-black bg-[#A7E2D1] font-bold text-xs disabled:opacity-50"
+                >
+                  Confirm
+                </button>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 mt-1 ml-2">
+                We'll send a code to confirm it. This is how you reset a forgotten password.
+              </p>
+            )}
+
+            {codeNotice && (
+              <p className="text-xs font-bold text-gray-600 mt-1 ml-2">{codeNotice}</p>
+            )}
           </div>
         </div>
       )}
@@ -323,7 +461,9 @@ export default function RegisterForm() {
           type="submit"
           variant="secondary"
           className="flex-1"
-          disabled={isSubmitting}
+          // Step 1 cannot be left until the address is confirmed. The message
+          // below says why, so the disabled button is never a mystery.
+          disabled={isSubmitting || (step === 0 && !emailConfirmed)}
         >
           {isSubmitting ? 'Creating account...' : isLast ? (
             <span className="flex items-center justify-center gap-2">
@@ -336,6 +476,12 @@ export default function RegisterForm() {
           )}
         </Button>
       </div>
+
+      {step === 0 && !emailConfirmed && (
+        <p className="text-xs text-gray-500 text-center mt-2">
+          Confirm your email address to continue.
+        </p>
+      )}
     </form>
   );
 }

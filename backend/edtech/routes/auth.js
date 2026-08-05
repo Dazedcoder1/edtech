@@ -283,6 +283,206 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
     }
 });
 
+// ============================================================
+// SIGNUP EMAIL VERIFICATION (before the account exists)
+// ============================================================
+
+/** Scope of the proof handed out once a typed address is confirmed. */
+const SIGNUP_PROOF_SCOPE = "signup-email-verified";
+
+/**
+ * How long the proof lasts.
+ *
+ * Long enough to finish the rest of the form without hurrying, short enough
+ * that one confirmed address cannot be used to create accounts days later.
+ */
+const SIGNUP_PROOF_TTL = "30m";
+
+const SIGNUP_CODE_TTL_MINUTES = 15;
+const SIGNUP_MAX_ATTEMPTS = 5;
+const SIGNUP_MAX_PER_HOUR = 5;
+
+/**
+ * POST /api/auth/request-signup-code
+ * Body: { email }
+ *
+ * Public by necessity — the caller has no account yet.
+ *
+ * Unlike the password-reset endpoint, this one *does* say when an address is
+ * already registered. The two look similar but leak differently: reset reveals
+ * who has an account to anyone who asks, whereas signup would reveal it anyway
+ * the moment the form is submitted, and refusing to say so just makes people
+ * type a code that can never be used.
+ */
+router.post("/request-signup-code", async (req, res) => {
+    try {
+        const check = normalizeEmail(req.body.email);
+        if (!check.ok || !check.email) {
+            return res.status(400).json({ error: "Enter a valid email address." });
+        }
+        const email = check.email;
+
+        const taken = await pool.query(`SELECT 1 FROM users WHERE email = $1`, [email]);
+        if (taken.rows.length > 0) {
+            return res.status(409).json({
+                error: "That email address is already registered. Try signing in instead.",
+            });
+        }
+
+        /*
+         * Per address, not per IP.
+         *
+         * The cost here is mail landing in a stranger's inbox: anyone can type
+         * any address into a signup form, so the limit has to protect the
+         * person receiving the messages rather than the person sending them.
+         */
+        const recent = await pool.query(
+            `SELECT COUNT(*)::int AS n FROM signup_email_verifications
+              WHERE email = $1 AND created_at > NOW() - INTERVAL '1 hour'`,
+            [email]
+        );
+        if (recent.rows[0].n >= SIGNUP_MAX_PER_HOUR) {
+            return res.status(429).json({
+                error: "Too many codes requested for that address. Please wait an hour.",
+            });
+        }
+
+        await pool.query(
+            `UPDATE signup_email_verifications SET consumed_at = NOW()
+              WHERE email = $1 AND consumed_at IS NULL`,
+            [email]
+        );
+
+        const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+        const codeHash = await bcrypt.hash(code, 10);
+
+        await pool.query(
+            `INSERT INTO signup_email_verifications (email, code_hash, expires_at)
+             VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval)`,
+            [email, codeHash, String(SIGNUP_CODE_TTL_MINUTES)]
+        );
+
+        const mail = verifyEmailMessage({ name: null, code, minutes: SIGNUP_CODE_TTL_MINUTES });
+        const sent = await sendMail({ to: email, ...mail });
+
+        if (!sent.ok) {
+            // Said plainly. The person is mid-signup and can do nothing about a
+            // mail server problem; pretending it worked strands them on a code
+            // screen waiting for something that will never arrive.
+            return res.status(502).json({
+                error: "We could not send the code right now. Please try again in a moment.",
+            });
+        }
+
+        res.json({ success: true, message: `We've sent a code to ${email}.` });
+    } catch (err) {
+        console.error("Request signup code error:", err);
+        res.status(500).json({ error: "Could not send the code. Please try again." });
+    }
+});
+
+/**
+ * POST /api/auth/verify-signup-code
+ * Body: { email, code }
+ *
+ * Returns a signed proof that this address was confirmed. The proof is what
+ * registration accepts — nothing is stored against the address, so there is no
+ * half-created account to clean up if the person abandons the form.
+ */
+router.post("/verify-signup-code", async (req, res) => {
+    try {
+        const check = normalizeEmail(req.body.email);
+        const digits = String(req.body.code ?? "").trim();
+
+        if (!check.ok || !check.email || !/^\d{6}$/.test(digits)) {
+            return res.status(400).json({ error: "Enter the 6-digit code from your email." });
+        }
+        const email = check.email;
+
+        const { rows } = await pool.query(
+            `SELECT id, code_hash, attempts FROM signup_email_verifications
+              WHERE email = $1 AND consumed_at IS NULL AND expires_at > NOW()
+              ORDER BY created_at DESC LIMIT 1`,
+            [email]
+        );
+        if (rows.length === 0) {
+            return res.status(400).json({ error: "That code has expired. Send a new one." });
+        }
+
+        const row = rows[0];
+
+        if (row.attempts >= SIGNUP_MAX_ATTEMPTS) {
+            await pool.query(
+                `UPDATE signup_email_verifications SET consumed_at = NOW() WHERE id = $1`,
+                [row.id]
+            );
+            return res.status(429).json({ error: "Too many wrong codes. Send a new one." });
+        }
+
+        const matches = await bcrypt.compare(digits, row.code_hash);
+        if (!matches) {
+            await pool.query(
+                `UPDATE signup_email_verifications SET attempts = attempts + 1 WHERE id = $1`,
+                [row.id]
+            );
+            const left = SIGNUP_MAX_ATTEMPTS - (row.attempts + 1);
+            return res.status(400).json({
+                error: left > 0
+                    ? `That code is not correct. ${left} attempt${left === 1 ? "" : "s"} left.`
+                    : "That code is not correct. Send a new one.",
+            });
+        }
+
+        await pool.query(
+            `UPDATE signup_email_verifications SET consumed_at = NOW() WHERE id = $1`,
+            [row.id]
+        );
+
+        /*
+         * The email is baked into the proof.
+         *
+         * Registration compares it against the address being registered, so a
+         * proof earned for one address cannot be used to create an account on
+         * another — which would let someone confirm an address they own and
+         * then sign up as anyone.
+         */
+        const proof = jwt.sign(
+            { email, scope: SIGNUP_PROOF_SCOPE },
+            JWT_SECRET,
+            { expiresIn: SIGNUP_PROOF_TTL }
+        );
+
+        res.json({ success: true, emailVerifiedToken: proof });
+    } catch (err) {
+        console.error("Verify signup code error:", err);
+        res.status(500).json({ error: "Could not check that code. Please try again." });
+    }
+});
+
+/**
+ * Check the proof presented at registration.
+ *
+ * @returns {{ok: true} | {ok: false, error: string}}
+ */
+function checkSignupProof(token, email) {
+    if (!token) {
+        return { ok: false, error: "Please confirm your email address before creating an account." };
+    }
+    let decoded;
+    try {
+        decoded = jwt.verify(token, JWT_SECRET);
+    } catch {
+        return { ok: false, error: "Your email confirmation expired. Please request a new code." };
+    }
+    if (decoded.scope !== SIGNUP_PROOF_SCOPE) {
+        return { ok: false, error: "Please confirm your email address before creating an account." };
+    }
+    if (String(decoded.email).toLowerCase() !== String(email).toLowerCase()) {
+        return { ok: false, error: "That confirmation was for a different email address." };
+    }
+    return { ok: true };
+}
+
 // ROUTE 1: REGISTER
 // POST /api/auth/register
 // Body: { name, phone, password, email?, role?, class_level?, board?, state?, school? }
@@ -326,6 +526,17 @@ router.post("/register", async (req, res) => {
         }
 
         /*
+         * The address must already have been confirmed.
+         *
+         * Verification moved into the form itself, so by the time this runs the
+         * person has entered a code sent to that address. Enforced here and not
+         * only in the UI: without this check the whole step is a suggestion,
+         * and anyone posting straight to the API skips it.
+         */
+        const proof = checkSignupProof(req.body.emailVerifiedToken, emailCheck.email);
+        if (!proof.ok) return res.status(400).json({ error: proof.error });
+
+        /*
          * Academic fields are required for students and ignored for educators.
          * A teacher has no class, and demanding one would block their signup on
          * a field that means nothing to them.
@@ -353,9 +564,10 @@ router.post("/register", async (req, res) => {
 
         const passwordHash = await bcrypt.hash(password, 10);
 
+        // TRUE: the address was confirmed by code before this row existed.
         const result = await pool.query(`
             INSERT INTO users (name, email, phone, password_hash, role, class_level, board, state, school, email_verified)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
             RETURNING id, name, email, phone, role, class_level, board, state, school, email_verified, created_at
         `, [
             String(name).trim(),
@@ -378,22 +590,20 @@ router.post("/register", async (req, res) => {
          * server having a bad minute must not turn a completed registration
          * into an error. The user lands in the app and can resend from there.
          */
-        await issueVerificationCode(user).catch((err) =>
-            console.error("[register] could not send verification code:", err.message)
-        );
-
         /*
-         * A verify-scoped token, not a session.
+         * A full session, and no second code.
          *
-         * The account exists, but it cannot be used until the address is
-         * confirmed — so what comes back is only good for submitting a code.
-         * The full token is issued by /verify-email once that succeeds.
+         * They confirmed the address a moment ago to get this far. Sending
+         * another code immediately would be asking them to prove the same
+         * thing twice within the same minute, which reads as the app having
+         * lost track of what just happened.
+         *
+         * The two-factor requirement still applies to every *later* sign-in.
          */
         res.status(201).json({
             success: true,
-            message: "Account created. Check your email for a verification code.",
-            requiresVerification: true,
-            token: verifyScopedToken(user),
+            message: "Account created successfully",
+            token: fullToken(user),
             user: publicUser(user),
         });
 
