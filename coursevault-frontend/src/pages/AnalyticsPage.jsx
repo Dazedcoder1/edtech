@@ -6,6 +6,7 @@ import { IndianRupee, Users, BookOpen, Download, TrendingUp } from 'lucide-react
 import { fetchAPI } from '../services/api.js';
 import { format } from 'date-fns';
 import { downloadCSV } from '../utils/exportCsv.js';
+import StudentDirectory from '../components/educator/StudentDirectory.jsx';
 
 export default function AnalyticsPage() {
   const [data, setData] = useState({ dashboard: null, earnings: null });
@@ -225,6 +226,13 @@ export default function AnalyticsPage() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Below the per-course figures: those answer "how is this course
+          doing", this answers "how is this person doing", and the second
+          question is usually the one that leads to a phone call. */}
+      <div className="mt-8 md:mt-12">
+        <StudentDirectory />
       </div>
     </div>
   );

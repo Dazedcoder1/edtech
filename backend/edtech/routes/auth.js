@@ -40,6 +40,45 @@ const publicUser = (u) => ({
 // EMAIL VERIFICATION
 // ============================================================
 
+/**
+ * Accounts that skip the emailed code at sign-in.
+ *
+ * Set as a comma-separated list in the environment:
+ *
+ *   TWO_FACTOR_EXEMPT_EMAILS=demo@example.com,admin@example.com
+ *
+ * Configured rather than hardcoded for two reasons. An address written into
+ * source is published to everyone who can read the repository — and this one
+ * is public. And changing who is exempt would otherwise need a code change and
+ * a deploy, at exactly the moment someone is locked out and needs it now.
+ *
+ * Read once at module load: this is deployment configuration, and re-reading
+ * it per request would invite the expectation that it changes without a
+ * restart.
+ */
+const TWO_FACTOR_EXEMPT = new Set(
+    String(process.env.TWO_FACTOR_EXEMPT_EMAILS || "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+);
+
+if (TWO_FACTOR_EXEMPT.size > 0) {
+    /*
+     * Announced at boot on purpose.
+     *
+     * An exemption is a deliberately weakened account. Left silent it would
+     * sit in an .env file long after the reason for it passed, and nobody
+     * reviewing the deployment would have any way to notice.
+     */
+    console.warn(
+        `⚠️  Two-factor is DISABLED for ${TWO_FACTOR_EXEMPT.size} account(s): ` +
+        `${[...TWO_FACTOR_EXEMPT].join(", ")}\n` +
+        `   These sign in with a password alone. Remove them from ` +
+        `TWO_FACTOR_EXEMPT_EMAILS when no longer needed.`
+    );
+}
+
 const VERIFY_TTL_MINUTES = 30;
 const VERIFY_MAX_ATTEMPTS = 5;
 
@@ -82,6 +121,26 @@ function fullToken(user) {
         JWT_SECRET,
         { expiresIn: JWT_EXPIRES_IN }
     );
+}
+
+/**
+ * Stamp the moment a session actually began.
+ *
+ * The `last_login` column has existed since the first schema and nothing has
+ * ever written to it, so every row reads NULL. Any report built on it would
+ * have shown "Never" for every student forever — the sort of empty feature
+ * that looks like a bug in the report rather than a gap in the data.
+ *
+ * Called where the *full* token is issued, not where the password is checked.
+ * With two-factor in place those are different moments: a correct password
+ * that never completes the emailed code is not a login, and counting it would
+ * quietly overstate how engaged a class is.
+ *
+ * Fire-and-forget. A failed stamp must not fail the login.
+ */
+function stampLastLogin(userId) {
+    pool.query(`UPDATE users SET last_login = NOW() WHERE id = $1`, [userId])
+        .catch((err) => console.error("[auth] could not record last_login:", err.message));
 }
 
 /**
@@ -272,6 +331,9 @@ router.post("/verify-email", authMiddleware, async (req, res) => {
          * would hold a token the middleware refuses everywhere, and a
          * successful verification would look like being logged out.
          */
+        // The session starts here, so this is the login worth recording.
+        stampLastLogin(req.user.id);
+
         res.json({
             success: true,
             token: fullToken(updated[0]),
@@ -600,6 +662,9 @@ router.post("/register", async (req, res) => {
          *
          * The two-factor requirement still applies to every *later* sign-in.
          */
+        // Registering signs them in, so it counts as their first login.
+        stampLastLogin(user.id);
+
         res.status(201).json({
             success: true,
             message: "Account created successfully",
@@ -673,7 +738,22 @@ router.post("/login", async (req, res) => {
          * would lock existing users out of their own accounts over a rule they
          * were never given the chance to satisfy.
          */
-        if (!user.email) {
+        /*
+         * Straight in, no code.
+         *
+         * Two cases: an account with no email at all (predates the
+         * requirement, has no second factor available), and one listed in
+         * TWO_FACTOR_EXEMPT_EMAILS.
+         *
+         * The exemption is checked against the address stored on the account,
+         * not the identifier that was typed — otherwise signing in by mobile
+         * number would bypass the exemption check and still demand a code,
+         * which is the opposite of what the setting is for.
+         */
+        const exempt = user.email && TWO_FACTOR_EXEMPT.has(String(user.email).toLowerCase());
+
+        if (!user.email || exempt) {
+            stampLastLogin(user.id);
             return res.json({
                 success: true,
                 message: "Login successful",

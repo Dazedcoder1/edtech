@@ -7,6 +7,7 @@ import CourseDetailPage from './pages/CourseDetailPage.jsx';
 import EducatorDashboardPage from './pages/EducatorDashboardPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 
 // NEW: Import the security wrapper
@@ -24,7 +25,8 @@ import './styles/globals.css';
  */
 const RoleHome = () => {
   const { user } = useAuth();
-  const target = user?.role === 'educator' || user?.role === 'admin' ? '/dashboard' : '/explore';
+  // Students land on /home now; educators keep their dashboard.
+  const target = user?.role === 'educator' || user?.role === 'admin' ? '/dashboard' : '/home';
   return <Navigate to={target} replace />;
 };
 
@@ -51,6 +53,7 @@ export default function App() {
               <Route path="/" element={<RoleHome />} />
               
               {/* Student Specific */}
+              <Route path="/home" element={<StudentHomePage />} />
               <Route path="/explore" element={<ExplorePage />} />
               <Route path="/my-learning" element={<MyLearningPage />} />
               

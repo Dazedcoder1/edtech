@@ -13,6 +13,75 @@ const SECTIONS = [
   { key: 'quizzes',   label: 'Quizzes',   Icon: HelpCircle, colour: 'bg-[#F9E076]' },
 ];
 
+/**
+ * One tab in a module's strip.
+ *
+ * @param {string}   label
+ * @param {number}   count    items filed here; shown as a badge
+ * @param {boolean}  active
+ * @param {Function} onClick
+ * @param {Function|null} onDelete  omitted for students, and for General while
+ *   it is empty — there would be nothing to delete
+ */
+function TabButton({ label, count, active, onClick, onDelete, deleteTitle, tone }) {
+  return (
+    <div className="relative shrink-0 flex items-end">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-current={active ? 'page' : undefined}
+        title={label}
+        className={`flex items-center gap-2 border-2 border-b-0 border-black rounded-t-xl font-bold text-sm transition-all
+          ${onDelete ? 'pl-3.5 pr-8' : 'px-4'}
+          ${active
+            ? 'bg-white py-3 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
+            : 'bg-[#E5CFC8] py-2.5 text-gray-700 hover:bg-[#DCC6BE]'}`}
+      >
+        {/*
+          Long chapter names are truncated rather than allowed to stretch the
+          tab. A single tab wide enough to push every other one off-screen is
+          how a strip becomes unusable.
+        */}
+        <span className="truncate max-w-[9rem]">{label}</span>
+
+        {count > 0 && (
+          <span
+            className={`shrink-0 min-w-[1.25rem] px-1 py-0.5 rounded-full border border-black text-[10px] leading-none font-black tabular-nums ${
+              active ? 'bg-[#F9E076]' : 'bg-white/70'
+            }`}
+          >
+            {count}
+          </span>
+        )}
+      </button>
+
+      {onDelete && (
+        /*
+         * Always visible, never hover-only.
+         *
+         * This used to appear on :hover, which does not exist on a touch
+         * screen — a teacher on a phone or tablet could not delete a tab at
+         * all. It is small and muted until hovered instead, which keeps it
+         * quiet without making it unreachable.
+         */
+        <button
+          type="button"
+          onClick={onDelete}
+          title={deleteTitle}
+          aria-label={deleteTitle}
+          className={`absolute right-1.5 rounded-full p-1 transition-colors z-20
+            ${active ? 'bottom-3' : 'bottom-2.5'}
+            ${tone === 'general'
+              ? 'text-red-600 hover:bg-red-100'
+              : 'text-black/40 hover:text-red-600 hover:bg-red-100'}`}
+        >
+          <X size={13} strokeWidth={3} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function CourseAccordion({
   module,
   moduleNumber,
@@ -301,6 +370,27 @@ export default function CourseAccordion({
    * as unfiled again and brings the tab back.
    */
   const showGeneralTab = !generalIsEmpty;
+
+  /**
+   * How many items sit in each tab.
+   *
+   * Shown on the tab itself so an empty chapter is obvious without opening it
+   * — which is the difference between "I haven't uploaded that yet" and "I
+   * uploaded it into the wrong tab", a mistake this layout invites and
+   * previously gave no way to spot.
+   */
+  const tabCounts = React.useMemo(() => {
+    const counts = { general: 0 };
+    for (const f of folders) counts[f.id] = 0;
+
+    const bump = (folderId) => {
+      const key = folderId || 'general';
+      if (key in counts) counts[key] += 1;
+    };
+    contents.forEach((c) => bump(c.folder_id));
+    quizzes.forEach((q) => bump(q.folder_id));
+    return counts;
+  }, [contents, quizzes, folders]);
 
   // 🌟 NEW: Arrow Movement Logic
   /**
@@ -900,73 +990,66 @@ export default function CourseAccordion({
 
       {isOpen && (
         <div className="border-t-2 border-black bg-gray-50 flex flex-col animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="flex items-end gap-x-2 overflow-x-auto pt-3 md:pt-4 px-3 md:px-4 bg-[#F4DFD8] border-b-2 border-black scrollbar-hide pb-0">
-            {/*
-              General is not a folder — it is the folder_id IS NULL bucket, and
-              it is where deleting a chapter sends that chapter's contents. So
-              it cannot be deleted, only hidden once nothing is in it.
+          {/*
+            The tab strip.
 
-              It stays visible while it holds anything, while it is the tab you
-              are looking at (otherwise the strip would yank the current tab out
-              from under you), and when there are no chapters at all — with no
-              tabs and no content, there would be nowhere to add the first item.
-            */}
-            {showGeneralTab && (
-              <div className="relative flex items-center group shrink-0">
-                <button
+            Scrolls horizontally on narrow screens rather than wrapping: a
+            wrapped strip changes height as tabs are added, which shifts the
+            content below it every time a chapter is created.
+          */}
+          <div className="relative bg-[#F4DFD8] border-b-2 border-black">
+            <div className="flex items-end gap-1.5 overflow-x-auto scrollbar-hide pt-2.5 md:pt-3 px-2.5 md:px-4 pb-0">
+              {/*
+                General is not a folder — it is the folder_id IS NULL bucket, and
+                it is where deleting a chapter sends that chapter's contents. So
+                it cannot be deleted, only hidden once nothing is in it.
+
+                It stays visible while it holds anything, while it is the tab you
+                are looking at (otherwise the strip would yank the current tab out
+                from under you), and when there are no chapters at all — with no
+                tabs and no content, there would be nowhere to add the first item.
+              */}
+              {showGeneralTab && (
+                <TabButton
+                  label="General"
+                  count={tabCounts.general}
+                  active={activeTabId === null}
                   onClick={() => setActiveTabId(null)}
-                  className={`px-6 py-2.5 border-2 border-black border-b-0 rounded-t-xl font-bold transition-all ${activeTabId === null
-                      ? 'bg-white pb-3.5 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
-                      : 'bg-[#E5CFC8] hover:bg-[#D9C3BC] text-gray-700'
-                    }`}
-                >
-                  General
-                </button>
-                {isCreator && !generalIsEmpty && (
-                  <button
-                    onClick={handleDeleteGeneral}
-                    title="Delete everything in General"
-                    aria-label="Delete everything in General"
-                    className="absolute -right-2 -top-2 bg-red-400 border-2 border-black rounded-full p-0.5 hover:bg-red-500 text-white z-20 shadow-[1px_1px_0px_0px_#111] opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                  >
-                    <X size={12} strokeWidth={3} />
-                  </button>
-                )}
-              </div>
-            )}
+                  onDelete={isCreator && !generalIsEmpty ? handleDeleteGeneral : null}
+                  deleteTitle="Delete everything in General"
+                  tone="general"
+                />
+              )}
 
-            {folders.map(folder => (
-              <div key={folder.id} className="relative flex items-center group">
-                <button
+              {folders.map((folder) => (
+                <TabButton
+                  key={folder.id}
+                  label={folder.title}
+                  count={tabCounts[folder.id] ?? 0}
+                  active={activeTabId === folder.id}
                   onClick={() => setActiveTabId(folder.id)}
-                  className={`px-5 py-2.5 border-2 border-black border-b-0 rounded-t-xl font-bold transition-all ${activeTabId === folder.id
-                      ? 'bg-white pb-3.5 -mb-[2px] z-10 shadow-[0px_-2px_0px_0px_#111]'
-                      : 'bg-[#E5CFC8] hover:bg-[#D9C3BC] text-gray-700'
-                    }`}
-                >
-                  {folder.title}
-                </button>
-                {isCreator && (
-                  <button
-                    onClick={(e) => handleDeleteTab(e, folder.id)}
-                    className="absolute -right-2 -top-2 bg-red-400 border-2 border-black rounded-full p-0.5 hover:bg-red-500 text-white z-20 shadow-[1px_1px_0px_0px_#111] opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Delete Tab"
-                  >
-                    <X size={12} strokeWidth={3} />
-                  </button>
-                )}
-              </div>
-            ))}
+                  onDelete={isCreator ? (e) => handleDeleteTab(e, folder.id) : null}
+                  deleteTitle={`Delete "${folder.title}"`}
+                />
+              ))}
 
-            {isCreator && (
-              <button
-                onClick={handleCreateTab}
-                title="Add Custom Tab"
-                className="px-3 py-2 bg-[#F9E076] border-2 border-black border-b-0 rounded-t-xl hover:bg-yellow-400 font-bold ml-2 transition-colors flex items-center gap-1 self-end shadow-[0px_-2px_0px_0px_#111]"
-              >
-                <Plus size={18} strokeWidth={3} />
-              </button>
-            )}
+              {isCreator && (
+                <button
+                  onClick={handleCreateTab}
+                  title="Add a chapter tab"
+                  className="shrink-0 self-end mb-0 flex items-center gap-1 px-3 py-2 rounded-t-xl border-2 border-b-0 border-dashed border-black/40 text-black/60 font-bold text-xs hover:border-solid hover:border-black hover:text-black hover:bg-[#F9E076] transition-colors"
+                >
+                  <Plus size={15} strokeWidth={3} /> Chapter
+                </button>
+              )}
+            </div>
+
+            {/*
+              A fade at the right edge, so a strip that scrolls looks like it
+              scrolls. Without it a cut-off tab reads as a rendering glitch.
+              pointer-events-none: it must not swallow taps on the tab beneath.
+            */}
+            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 bg-gradient-to-l from-[#F4DFD8] to-transparent md:hidden" />
           </div>
 
           <div className="p-3 md:p-8 bg-white min-h-[140px] md:min-h-[300px] relative">

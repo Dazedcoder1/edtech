@@ -50,7 +50,7 @@ export const AuthProvider = ({ children }) => {
    * the landing page and the nav consistent.
    */
   const homeFor = (role) =>
-    role === 'educator' || role === 'admin' ? '/dashboard' : '/explore';
+    role === 'educator' || role === 'admin' ? '/dashboard' : '/home';
 
   /**
    * @param {string} identifier a mobile number or an email address

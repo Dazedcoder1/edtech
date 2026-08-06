@@ -25,6 +25,11 @@ services:
       - SMTP_USER=${SMTP_USER}
       - SMTP_PASS=${SMTP_PASS}
       - SMTP_FROM=${SMTP_FROM}
+      # Comma-separated addresses that sign in without the emailed code.
+      # Each one is an account a stolen password alone opens, so keep the list
+      # short and remove entries once the reason for them has passed. The
+      # backend prints the list at boot.
+      - TWO_FACTOR_EXEMPT_EMAILS=${TWO_FACTOR_EXEMPT_EMAILS}
     ports:
       - "3000:3000"
     volumes:

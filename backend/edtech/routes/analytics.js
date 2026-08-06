@@ -4,6 +4,82 @@ import authMiddleware from "../middleware/auth.js";
 
 const router = express.Router();
 
+/**
+ * GET /api/analytics/students
+ *
+ * Every student enrolled in any of this educator's courses, one row per
+ * enrolment — so someone taking three subjects appears three times, which is
+ * what "who is enrolled in what" actually means.
+ *
+ * Scoped by `c.educator_id = $1` in the query itself rather than filtered
+ * afterwards: a teacher must never see another teacher's students, and a WHERE
+ * clause cannot be forgotten the way a post-filter can.
+ */
+router.get("/students", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== "educator" && req.user.role !== "admin") {
+            return res.status(403).json({ error: "Access denied. Only educators can view analytics." });
+        }
+
+        const { rows } = await pool.query(`
+            SELECT
+                u.id            AS student_id,
+                u.name          AS student_name,
+                u.email         AS student_email,
+                u.phone         AS student_phone,
+                u.class_level,
+                u.board,
+                u.last_login,
+                c.id            AS course_id,
+                c.title         AS course_title,
+                parent.title    AS parent_course_title,
+                e.enrolled_at,
+                e.expires_at,
+                e.status,
+                e.payment_status,
+                e.amount_paid,
+                /*
+                 * Computed, not stored. There is no progress column on
+                 * enrollments — an earlier version of this file selected one
+                 * and every request failed with "column e.progress does not
+                 * exist". Counting distinct completed videos against the
+                 * course's total is the same number, derived from rows that
+                 * definitely exist.
+                 */
+                (
+                    SELECT COUNT(DISTINCT vp.content_id)::int
+                      FROM video_progress vp
+                     WHERE vp.user_id = u.id AND vp.course_id = c.id
+                ) AS videos_started,
+                (
+                    SELECT COUNT(DISTINCT qa.quiz_id)::int
+                      FROM quiz_attempts qa
+                      JOIN quizzes q ON q.id = qa.quiz_id
+                      JOIN modules m ON m.id = q.module_id
+                     WHERE qa.user_id = u.id AND m.course_id = c.id
+                       AND qa.status = 'completed'
+                ) AS quizzes_done
+            FROM enrollments e
+            JOIN users   u      ON u.id = e.user_id
+            JOIN courses c      ON c.id = e.course_id
+            LEFT JOIN courses parent ON parent.id = c.parent_course_id
+            WHERE c.educator_id = $1
+              AND c.is_active = true
+            ORDER BY
+                -- Anyone who has never signed in sorts to the top: they are the
+                -- ones a teacher needs to chase, and burying them under active
+                -- students is the opposite of useful.
+                u.last_login NULLS FIRST,
+                u.name ASC
+        `, [req.user.id]);
+
+        res.json({ success: true, students: rows });
+    } catch (err) {
+        console.error("GET /analytics/students:", err);
+        res.status(500).json({ error: "Could not load the student list" });
+    }
+});
+
 // ============================================================
 // ROUTE 1: EDUCATOR DASHBOARD OVERVIEW
 // GET /api/analytics/dashboard

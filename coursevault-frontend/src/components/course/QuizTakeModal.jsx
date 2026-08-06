@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Trophy, Target, ArrowRight, RotateCcw, Award, TrendingUp, ListChecks, Clock } from 'lucide-react';
+import { X, Trophy, Target, ArrowRight, RotateCcw, Award, TrendingUp, ListChecks, Clock, ClipboardCheck, Shuffle, AlertTriangle } from 'lucide-react';
 import Button from '../ui/Button.jsx';
 import { fetchAPI, resolveMediaUrl } from '../../services/api.js';
 import MathDisplay from '../ui/MathDisplay.jsx';
@@ -42,6 +42,16 @@ export default function QuizTakeModal({ quizId, onClose }) {
   const [showReview, setShowReview] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
 
+  /*
+   * The questions are not shown until this is true.
+   *
+   * The briefing exists so nobody meets the rules for the first time
+   * mid-attempt — and because the clock has to start at a moment the student
+   * chose. Loading a timed quiz and having it already be running while they
+   * read the instructions would be the same trap in a different place.
+   */
+  const [started, setStarted] = useState(false);
+
   // 🌟 Real open -> submit timer. Set the instant the quiz's questions
   // are actually on screen (not when the request merely fires), so the
   // measured time matches what the student experiences.
@@ -78,7 +88,9 @@ export default function QuizTakeModal({ quizId, onClose }) {
       setAnswers({});
       setScorecard(null);
       setTimedOut(false);
-      startTimeRef.current = Date.now();
+      setStarted(false);
+      // startTimeRef is deliberately not set here. The clock starts when the
+      // student presses Start, not when the request happens to return.
     } catch (err) {
       alert(err.message || "Failed to load quiz");
       onClose();
@@ -142,7 +154,9 @@ export default function QuizTakeModal({ quizId, onClose }) {
    */
   useEffect(() => {
     const limitMinutes = quiz?.time_limit;
-    if (!limitMinutes || !startTimeRef.current || scorecard) {
+    // `started` in the guard, not just startTimeRef: the ref is not reactive,
+    // so without it this effect would not re-run when the student begins.
+    if (!started || !limitMinutes || !startTimeRef.current || scorecard) {
       setSecondsLeft(null);
       return;
     }
@@ -158,7 +172,12 @@ export default function QuizTakeModal({ quizId, onClose }) {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [quiz, scorecard, questions.length]);
+  }, [quiz, scorecard, questions.length, started]);
+
+  const beginQuiz = () => {
+    startTimeRef.current = Date.now();
+    setStarted(true);
+  };
 
   if (!quizId) return null;
 
@@ -220,7 +239,129 @@ export default function QuizTakeModal({ quizId, onClose }) {
           </div>
         )}
 
-        {!isLoading && !scorecard && (
+        {/* ------------------------------------------------------ briefing */}
+        {!isLoading && !scorecard && !started && (
+          <div className="flex-1 min-h-0 overflow-y-auto p-5 md:p-8 bg-[#F4F4F4]">
+            <div className="max-w-lg mx-auto text-center">
+              <div className="w-20 h-20 mx-auto mb-5 rounded-full border-2 border-black bg-[#87CEFA] flex items-center justify-center shadow-[3px_3px_0px_0px_#111]">
+                <ClipboardCheck size={36} strokeWidth={2.5} />
+              </div>
+
+              <h2 className="font-black text-xl md:text-3xl leading-tight mb-6">
+                <MathDisplay text={quiz?.title || 'Quiz'} />
+              </h2>
+
+              <div className="grid grid-cols-3 gap-2 md:gap-3 mb-7">
+                <div className="border-2 border-black rounded-xl bg-white p-2.5 md:p-4 shadow-[2px_2px_0px_0px_#111]">
+                  <div className="text-[10px] md:text-xs font-bold uppercase text-gray-500">Questions</div>
+                  <div className="font-black text-xl md:text-3xl">{questions.length}</div>
+                </div>
+                <div className="border-2 border-black rounded-xl bg-white p-2.5 md:p-4 shadow-[2px_2px_0px_0px_#111]">
+                  <div className="text-[10px] md:text-xs font-bold uppercase text-gray-500">Time</div>
+                  <div className="font-black text-xl md:text-3xl">
+                    {/* "No limit" rather than a dash: a blank here reads as
+                        missing information on the one screen meant to remove
+                        uncertainty. */}
+                    {quiz?.time_limit ? `${quiz.time_limit}` : '∞'}
+                  </div>
+                  <div className="text-[10px] md:text-xs font-bold text-gray-400">
+                    {quiz?.time_limit ? 'minutes' : 'no limit'}
+                  </div>
+                </div>
+                <div className="border-2 border-black rounded-xl bg-white p-2.5 md:p-4 shadow-[2px_2px_0px_0px_#111]">
+                  <div className="text-[10px] md:text-xs font-bold uppercase text-gray-500">Attempts</div>
+                  <div className="font-black text-xl md:text-3xl">1</div>
+                  <div className="text-[10px] md:text-xs font-bold text-gray-400">only</div>
+                </div>
+              </div>
+
+              {/*
+                Every line below describes something this quiz actually does.
+                A briefing that mentions negative marking or practice retries
+                when neither exists is worse than none — it makes students play
+                around rules that were never there, and teaches them not to
+                trust the next screen either.
+              */}
+              <div className="text-left border-2 border-black rounded-2xl bg-white p-4 md:p-5 shadow-[3px_3px_0px_0px_#111] mb-6">
+                <h3 className="font-black text-sm md:text-base uppercase mb-3">Before you start</h3>
+                <ul className="flex flex-col gap-3 text-xs md:text-sm font-medium leading-relaxed">
+                  <li className="flex gap-2.5">
+                    <ListChecks size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                    <span>
+                      {questions.length} multiple-choice question{questions.length === 1 ? '' : 's'},
+                      each with <strong>one</strong> correct answer. There is no negative marking.
+                    </span>
+                  </li>
+
+                  {quiz?.time_limit ? (
+                    <li className="flex gap-2.5">
+                      <Clock size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                      <span>
+                        You have <strong>{quiz.time_limit} minutes</strong>. The timer starts when you
+                        press Start and the quiz <strong>submits itself</strong> when it runs out —
+                        whatever you have answered by then is what counts.
+                      </span>
+                    </li>
+                  ) : (
+                    <li className="flex gap-2.5">
+                      <Clock size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                      <span>There is no time limit. Take as long as you need.</span>
+                    </li>
+                  )}
+
+                  <li className="flex gap-2.5">
+                    <AlertTriangle size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                    <span>
+                      You get <strong>one attempt</strong>. Closing this window will not give you a
+                      second one, so finish in a single sitting.
+                    </span>
+                  </li>
+
+                  {(quiz?.shuffle_questions || quiz?.shuffle_options) && (
+                    <li className="flex gap-2.5">
+                      <Shuffle size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                      <span>
+                        {quiz.shuffle_questions && quiz.shuffle_options
+                          ? 'Questions and answer options are in a different order for every student.'
+                          : quiz.shuffle_questions
+                          ? 'Questions are in a different order for every student.'
+                          : 'Answer options are in a different order for every student.'}
+                      </span>
+                    </li>
+                  )}
+
+                  <li className="flex gap-2.5">
+                    <Target size={16} strokeWidth={2.5} className="shrink-0 mt-0.5 text-[#F26B4D]" />
+                    <span>
+                      Unanswered questions are marked wrong, so answer every one even if you are
+                      unsure.
+                    </span>
+                  </li>
+                </ul>
+              </div>
+
+              <Button
+                type="button"
+                variant="primary"
+                onClick={beginQuiz}
+                disabled={questions.length === 0}
+                className="w-full text-base md:text-lg py-3"
+              >
+                {questions.length === 0 ? 'No questions in this quiz' : 'Start Quiz'}
+              </Button>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-3 text-xs font-bold text-gray-500 hover:text-black underline underline-offset-2"
+              >
+                Not now — go back
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!isLoading && !scorecard && started && (
           <form onSubmit={handleSubmit} className="flex-1 min-h-0 overflow-y-auto p-3 md:p-8 flex flex-col gap-4 md:gap-8 bg-[#F4F4F4]">
             {questions.map((q, index) => (
               <div key={q.id} className="bg-white border-2 border-black rounded-xl md:rounded-2xl p-3 md:p-6 shadow-[3px_3px_0px_0px_#111] md:shadow-[4px_4px_0px_0px_#111]">

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy } from 'lucide-react';
+import { Compass, BookOpen, LayoutDashboard, BarChart3, User as UserIcon, LifeBuoy, Home } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import PageTransition from '../ui/PageTransition.jsx';
 import NotificationBell from './NotificationBell.jsx';
@@ -43,11 +43,13 @@ export default function MainLayout() {
         { path: '/analytics', label: 'Analytics' },
       ]
     : [
+        { path: '/home', label: 'Home' },
         { path: '/explore', label: 'Explore' },
         { path: '/my-learning', label: 'My Learning' },
       ];
 
   const getIcon = (path) => {
+    if (path === '/home') return Home;
     if (path === '/explore') return Compass;
     if (path === '/my-learning') return BookOpen;
     if (path === '/dashboard') return LayoutDashboard;
@@ -61,7 +63,7 @@ export default function MainLayout() {
         {/* Logo */}
         <div 
           className="relative cursor-pointer group inline-block" 
-          onClick={() => navigate(user?.role === 'educator' ? '/dashboard' : '/explore')}
+          onClick={() => navigate(user?.role === 'educator' ? '/dashboard' : '/home')}
         >
           <img src="/sv-logo.png" alt="Sharda Vidyapeeth" className="h-10 md:h-12 w-auto" />
         </div>

@@ -18,6 +18,7 @@ import quizRoutes from "./routes/quiz.js";        // ✅ Quiz routes
 import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
 import notificationRoutes from "./routes/notifications.js";
 import supportRoutes from "./routes/support.js";
+import homeRoutes from "./routes/home.js";
 import { verifyMail } from "./utils/mailer.js";
 
 // Import config
@@ -696,6 +697,7 @@ app.use("/api/quiz", quizRoutes);      // ✅ Quiz routes
 app.use("/api/test", testRoutes);      // ✅ Test routes (NEW)
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/support", supportRoutes);
+app.use("/api/home", homeRoutes);
 
 // ============================================
 // HLS Proxy Route
