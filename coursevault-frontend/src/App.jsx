@@ -9,6 +9,7 @@ import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import { ThemeProvider } from './context/ThemeContext.jsx';
 
 // NEW: Import the security wrapper
 import ScreenProtection from './components/security/ScreenProtection.jsx'; 
@@ -41,6 +42,12 @@ const ProtectedRoute = ({ children }) => {
 export default function App() {
   return (
     <BrowserRouter>
+      {/*
+        Outside AuthProvider on purpose. The theme applies to the sign-in page
+        too, and that renders before anyone is authenticated — nesting it
+        inside would mean the login screen never got the school's colours.
+      */}
+      <ThemeProvider>
       <AuthProvider>
         {/* SECURE ENVELOPE: This wraps every route to globally block screenshots and snipping tools */}
         <ScreenProtection>
@@ -73,6 +80,7 @@ export default function App() {
           </Routes>
         </ScreenProtection>
       </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

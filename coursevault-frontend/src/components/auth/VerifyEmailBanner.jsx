@@ -79,7 +79,8 @@ export default function VerifyEmailBanner() {
   };
 
   return (
-    <div className="mx-auto max-w-[1400px] px-6 pt-3">
+    // Mirrors the gutter on <main>; it renders above it, outside that element.
+    <div className="mx-auto max-w-[1400px] px-4 md:px-6 pt-3">
       <div className="rounded-2xl border-2 border-black bg-[#F9E076] shadow-[3px_3px_0px_0px_#111] overflow-hidden">
         <div className="flex items-start gap-3 p-3 md:p-4">
           <MailWarning size={20} strokeWidth={2.5} className="shrink-0 mt-0.5" />

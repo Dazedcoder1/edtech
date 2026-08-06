@@ -18,6 +18,34 @@ const transitionColors = [
   "#A084E8"  // Lavender
 ];
 
+/**
+ * One tab in the phone bottom bar.
+ *
+ * `flex-1 min-w-0` is what lets five tabs fit a 360px screen: without it the
+ * labels set the width and the row overflows. `truncate` is the backstop for
+ * a longer label in another language.
+ */
+function TabButton({ icon: Icon, label, active, pressed, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      // Only route tabs claim to be the current page. The help desk is a
+      // drawer, so it reports pressed instead — saying "current page" for
+      // something that never changed the page misleads a screen reader.
+      aria-current={pressed === undefined && active ? 'page' : undefined}
+      aria-pressed={pressed}
+      className={`flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 py-1.5
+                  rounded-2xl font-bold text-[10px] transition-colors ${
+        active ? 'bg-[#A7E2D1] border-2 border-black' : 'text-black/60'
+      }`}
+    >
+      <Icon size={19} strokeWidth={2.5} className="shrink-0" />
+      <span className="truncate max-w-full">{label}</span>
+    </button>
+  );
+}
+
 export default function MainLayout() {
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -59,7 +87,7 @@ export default function MainLayout() {
 
   return (
     <div className="min-h-screen bg-[#FDF1E9] pb-20 font-sans overflow-x-hidden">
-     <nav className="relative z-50 flex flex-wrap justify-between items-center px-6 md:px-12 py-2 md:py-3 sticky top-0 bg-[#FDF1E9] shadow-[0px_4px_10px_rgba(0,0,0,0.12)]">
+     <nav className="relative z-50 flex flex-wrap justify-between items-center px-4 md:px-12 py-2 md:py-3 sticky top-0 bg-[#FDF1E9] shadow-[0px_4px_10px_rgba(0,0,0,0.12)]">
         {/* Logo */}
         <div 
           className="relative cursor-pointer group inline-block" 
@@ -91,27 +119,39 @@ export default function MainLayout() {
         <div className="flex items-center gap-2 sm:gap-3">
           <NotificationBell onOpenSupport={openHelp} />
 
-          {/* Help desk. Icon-only at every width — the header already carries
-              the logo, nav and name pill, and a labelled button pushes the
-              name pill off a 360px screen. */}
+          {/*
+            Help desk, desktop only.
+
+            On a phone this lives in the bottom tab bar instead. The bar is
+            md:hidden, so the two are exact complements — removing this
+            outright would leave desktop with no way in at all.
+          */}
           <button
             type="button"
             onClick={() => openHelp()}
             title="Help desk"
             aria-label="Help desk"
-            className="flex items-center justify-center w-9 h-9 rounded-full border-2 border-black bg-white hover:bg-[#A7E2D1] transition-colors"
+            aria-pressed={helpOpen}
+            className="hidden md:flex items-center justify-center w-9 h-9 rounded-full border-2 border-black bg-white hover:bg-[#A7E2D1] transition-colors"
           >
             <LifeBuoy size={16} strokeWidth={3} />
           </button>
 
-          {/* Signing out lives on the profile page now, so this pill stays
-              visible at every width rather than hiding below sm. */}
+          {/*
+            Name pill, desktop only.
+
+            On a phone it was redundant twice over: the home page greeting
+            already says the name, and Profile is a tab in the bottom bar, so
+            this was neither telling nor going anywhere new — it just crowded
+            a 360px header. The bar is md:hidden and this is hidden md:flex,
+            so between them the profile route is reachable at every width.
+          */}
           <button
             type="button"
             onClick={() => navigate('/profile')}
             title="Your profile"
             aria-current={location.pathname === '/profile' ? 'page' : undefined}
-            className={`flex max-w-[9rem] px-3 sm:px-4 py-1.5 rounded-[30px] border-2 border-black font-bold text-xs items-center gap-2 cursor-pointer transition-colors ${
+            className={`hidden md:flex max-w-[9rem] px-3 sm:px-4 py-1.5 rounded-[30px] border-2 border-black font-bold text-xs items-center gap-2 cursor-pointer transition-colors ${
               location.pathname === '/profile'
                 ? 'bg-[#F9E076]'
                 : 'bg-white hover:bg-[#F9E076]'
@@ -127,7 +167,17 @@ export default function MainLayout() {
           accounts, so it costs nothing for everyone else. */}
       <VerifyEmailBanner />
 
-     <main className="max-w-[1400px] mx-auto px-6 pt-3 md:pt-10 relative">
+     {/*
+          The page gutter, set once here.
+
+          It was a flat px-6 — 24px a side at every width, so 48px of a 360px
+          phone was margin before any content. 16px on a phone is the usual
+          mobile gutter and gives that width back; desktop keeps 24px.
+
+          Pages must not add their own horizontal padding on top of this.
+          ProfilePage did, and compounded to 40px a side.
+      */}
+     <main className="max-w-[1400px] mx-auto px-4 md:px-6 pt-3 md:pt-10 relative">
         <AnimatePresence mode="wait">
           <PageTransition 
             key={location.pathname} 
@@ -138,41 +188,48 @@ export default function MainLayout() {
         </AnimatePresence>
       </main>
 
-      {/* MOBILE BOTTOM TAB BAR */}
-      <div
-        className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex justify-around items-center bg-white border-t-2 border-black px-2 pt-2"
+      {/* MOBILE BOTTOM TAB BAR
+
+          Five tabs now that Help lives here, so the per-tab padding is gone
+          and each one flexes instead. Fixed padding fitted four items and
+          overflowed at five on a 360px screen.                              */}
+      <nav
+        aria-label="Main"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex items-stretch bg-white border-t-2 border-black px-1 pt-1.5"
         style={{ paddingBottom: 'calc(0.5rem + env(safe-area-inset-bottom))' }}
       >
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
-          const Icon = getIcon(item.path);
-          return (
-            <button
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              className={`flex flex-col items-center justify-center gap-0.5 px-4 py-1.5 rounded-2xl font-bold text-[11px] transition-colors ${
-                isActive ? 'bg-[#A7E2D1] border-2 border-black' : 'text-black/60'
-              }`}
-            >
-              <Icon size={20} strokeWidth={2.5} />
-              {item.label}
-            </button>
-          );
-        })}
+        {navItems.map((item) => (
+          <TabButton
+            key={item.path}
+            icon={getIcon(item.path)}
+            label={item.label}
+            active={location.pathname === item.path}
+            onClick={() => navigate(item.path)}
+          />
+        ))}
+
+        {/*
+          Help desk, moved down from the header.
+
+          A button rather than a link — it opens a drawer, not a route — so it
+          reports pressed state instead of claiming to be the current page.
+        */}
+        <TabButton
+          icon={LifeBuoy}
+          label="Help"
+          active={helpOpen}
+          pressed={helpOpen}
+          onClick={() => openHelp()}
+        />
 
         {/* Phone route to the profile page, which is also where sign-out is. */}
-        <button
+        <TabButton
+          icon={UserIcon}
+          label="Profile"
+          active={location.pathname === '/profile'}
           onClick={() => navigate('/profile')}
-          className={`flex flex-col items-center justify-center gap-0.5 px-4 py-1.5 rounded-2xl font-bold text-[11px] transition-colors ${
-            location.pathname === '/profile'
-              ? 'bg-[#A7E2D1] border-2 border-black'
-              : 'text-black/60'
-          }`}
-        >
-          <UserIcon size={20} strokeWidth={2.5} />
-          Profile
-        </button>
-      </div>
+        />
+      </nav>
 
       {helpOpen && (
         <HelpDeskPanel

@@ -49,6 +49,37 @@ export function streakFromDays(isoDays, today = new Date()) {
     return streak;
 }
 
+
+/**
+ * The last seven days, oldest first, each flagged active or not.
+ *
+ * Built here rather than in the browser on purpose. The day strings come out
+ * of Postgres as YYYY-MM-DD with no zone, and `new Date('2026-08-06')` parses
+ * as UTC midnight — so calling .getDay() on it in any timezone west of
+ * Greenwich reports the previous day. Every dot would sit under the wrong
+ * letter for half the world. Returning the weekday index alongside the flag
+ * means the client never parses a date at all.
+ *
+ * @param {string[]} isoDays distinct activity days as YYYY-MM-DD
+ * @returns {{day: string, active: boolean, dow: number}[]} dow: 0 = Sunday
+ */
+export function lastSevenDays(isoDays, today = new Date()) {
+    const active = new Set((isoDays ?? []).map((d) => String(d).slice(0, 10)));
+    const dayMs = 86_400_000;
+
+    // Anchored to a UTC midnight so adding days cannot land on a 23- or
+    // 25-hour boundary and skip or repeat a date across a DST change.
+    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+
+    const out = [];
+    for (let i = 6; i >= 0; i--) {
+        const d = new Date(todayUtc - i * dayMs);
+        const iso = d.toISOString().slice(0, 10);
+        out.push({ day: iso, active: active.has(iso), dow: d.getUTCDay() });
+    }
+    return out;
+}
+
 /**
  * GET /api/home
  *
@@ -92,6 +123,7 @@ router.get("/", authMiddleware, async (req, res) => {
                 c.title,
                 c.description,
                 c.thumbnail_url,
+                c.category,
                 c.price,
                 e.enrolled_at,
                 e.expires_at,
@@ -147,13 +179,44 @@ router.get("/", authMiddleware, async (req, res) => {
                     AND qa.status = 'completed') AS quizzes_done
         `, [userId]);
 
+        /*
+         * Slides for the carousel at the top of the home screen.
+         *
+         * Published top-level courses that have a thumbnail — the carousel is
+         * a picture strip, and a slide with no picture is a grey rectangle
+         * with a title on it, which looks broken rather than minimal.
+         *
+         * Not restricted to enrolled courses: this is the discovery surface,
+         * and a student who has joined nothing yet is exactly who most needs
+         * to see what is on offer. Nothing sensitive is exposed — the title
+         * and cover of a published course are already public on Explore.
+         */
+        const featured = await pool.query(`
+            SELECT c.id, c.title, c.thumbnail_url, c.category, c.price,
+                   EXISTS (
+                       SELECT 1 FROM enrollments e
+                        WHERE e.course_id = c.id AND e.user_id = $1
+                          AND ${activeEnrolmentSql('e')}
+                   ) AS enrolled
+              FROM courses c
+             WHERE c.is_active = true
+               AND c.status = 'published'
+               AND c.parent_course_id IS NULL
+               AND c.thumbnail_url IS NOT NULL
+               AND c.thumbnail_url <> ''
+             ORDER BY c.created_at DESC
+             LIMIT 8
+        `, [userId]);
+
         const days = activity.rows.map((r) => r.day);
 
         res.json({
             success: true,
             streak: streakFromDays(days),
             activeDays: days.length,
+            recentDays: lastSevenDays(days),
             courses: courses.rows,
+            featured: featured.rows,
             counts: counts.rows[0] ?? { notes_count: 0, quiz_count: 0, quizzes_done: 0 },
         });
     } catch (err) {

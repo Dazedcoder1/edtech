@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, UploadCloud, Image as ImageIcon, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
 import { fetchAPI, BASE_URL, resolveMediaUrl } from '../../services/api';
+import { COURSE_CATEGORIES } from '../../constants/courseCategories';
 
 export default function CourseModal({ isOpen, onClose, course = null, onSave, parentCourseId = null }) {
   const [title, setTitle] = useState('');
@@ -9,6 +10,8 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
   const [price, setPrice] = useState(0);
   const [status, setStatus] = useState('draft');
   const [thumbnailUrl, setThumbnailUrl] = useState('');
+  // '' means uncategorised, which is a valid choice rather than a missing one.
+  const [category, setCategory] = useState('');
   const [validityMonths, setValidityMonths] = useState(''); // blank = lifetime
   // 'months' for real courses, 'minutes' purely to verify the lockout works.
   const [validityUnit, setValidityUnit] = useState('months');
@@ -22,6 +25,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setPrice(course.price || 0);
       setStatus(course.status || 'draft');
       setThumbnailUrl(course.thumbnail_url || '');
+      setCategory(course.category || '');
       // A course saved in test minutes reopens in test minutes, rather than
       // silently showing a blank month field that would wipe it on save.
       if (course.access_duration_minutes) {
@@ -37,6 +41,7 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       setPrice(0);
       setStatus('draft');
       setThumbnailUrl('');
+      setCategory('');
       setValidityMonths('');
       setValidityUnit('months');
     }
@@ -120,6 +125,9 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
       price: parseFloat(price), 
       status,
       thumbnail_url: thumbnailUrl,
+      // Sent even when blank: the server reads null as "clear it", which is how
+      // a category gets removed once set.
+      category: category || null,
       // Blank means lifetime; the server stores null. Only one of the two is
       // ever set — minutes wins server-side, so sending both would be
       // ambiguous about which the teacher actually chose.
@@ -221,6 +229,24 @@ export default function CourseModal({ isOpen, onClose, course = null, onSave, pa
                 />
               </label>
             )}
+          </div>
+
+          <div>
+            <label className="font-bold text-sm ml-1 mb-1 block">Category</label>
+            <select
+              value={category}
+              onChange={e => setCategory(e.target.value)}
+              className="w-full bg-[#F4F4F4] border-2 border-black rounded-xl px-4 py-2 font-medium focus:outline-none focus:shadow-[4px_4px_0px_0px_#F26B4D]"
+            >
+              <option value="">No category</option>
+              {COURSE_CATEGORIES.map(c => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 font-medium mt-1">
+              Decides which filter students find this course under on their home
+              screen. Leave blank and it shows under "All" only.
+            </p>
           </div>
 
           <div className="flex gap-4">

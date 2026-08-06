@@ -1,4 +1,5 @@
 ﻿import express from "express";
+import { parseCategory, COURSE_CATEGORIES } from "../constants/courseCategories.js";
 import pool from "../config/database.js";
 import authMiddleware from "../middleware/auth.js";
 import { activeEnrolmentSql, parseDurationMonths, parseDurationMinutes } from "../utils/enrollmentAccess.js";
@@ -8,6 +9,17 @@ import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "../config/jwt.js";
 
 const router = express.Router();
+
+/*
+ * GET /api/courses/categories
+ *
+ * Registered before any "/:id" route so the literal path wins the match —
+ * Express takes the first route whose pattern fits, and "/:id" fits
+ * "/categories" perfectly well.
+ */
+router.get("/categories", (req, res) => {
+    res.json({ success: true, categories: COURSE_CATEGORIES });
+});
 
 // GET /api/courses
 
@@ -267,12 +279,14 @@ router.post("/", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only educators can create courses" });
         }
 
-        const { title, description, price, status, parent_course_id, thumbnail_url, access_duration_months, access_duration_minutes } = req.body;
+        const { title, description, price, status, parent_course_id, thumbnail_url, access_duration_months, access_duration_minutes, category } = req.body;
 
         const duration = parseDurationMonths(access_duration_months);
         if (!duration.ok) return res.status(400).json({ error: duration.error });
         const testDuration = parseDurationMinutes(access_duration_minutes);
         if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
+        const cat = parseCategory(category);
+        if (!cat.ok) return res.status(400).json({ error: cat.error });
 
         const client = await pool.connect();
 
@@ -294,8 +308,8 @@ router.post("/", authMiddleware, async (req, res) => {
              * course would restart at 1.
              */
             const courseResult = await client.query(`
-    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, access_duration_months, access_duration_minutes, display_order)
-    SELECT $1, $2, $3, $4, $5, $6, true, $7, $8, $9,
+    INSERT INTO courses (educator_id, title, description, price, status, thumbnail_url, is_active, parent_course_id, access_duration_months, access_duration_minutes, category, display_order)
+    SELECT $1, $2, $3, $4, $5, $6, true, $7, $8, $9, $10,
            COALESCE((
                SELECT MAX(display_order) FROM courses
                WHERE educator_id = $1
@@ -303,7 +317,7 @@ router.post("/", authMiddleware, async (req, res) => {
                  AND parent_course_id IS NOT DISTINCT FROM $7
            ), 0) + 1
     RETURNING *
-`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null, duration.months, testDuration.minutes]);
+`, [req.user.id, title, description, price || 0, status || "draft", thumbnail_url || null, parent_course_id || null, duration.months, testDuration.minutes, cat.value]);
             const course = courseResult.rows[0];
 
             const moduleResult = await client.query(`
@@ -384,12 +398,14 @@ router.put("/:id", authMiddleware, async (req, res) => {
             return res.status(403).json({ error: "Only course creator can update courses" });
         }
 
-        const { title, description, price, status, thumbnail_url, access_duration_months, access_duration_minutes } = req.body;
+        const { title, description, price, status, thumbnail_url, access_duration_months, access_duration_minutes, category } = req.body;
 
         const duration = parseDurationMonths(access_duration_months);
         if (!duration.ok) return res.status(400).json({ error: duration.error });
         const testDuration = parseDurationMinutes(access_duration_minutes);
         if (!testDuration.ok) return res.status(400).json({ error: testDuration.error });
+        const cat = parseCategory(category);
+        if (!cat.ok) return res.status(400).json({ error: cat.error });
 
         const result = await pool.query(`
     UPDATE courses
@@ -404,10 +420,13 @@ router.put("/:id", authMiddleware, async (req, res) => {
         -- expires_at stamped when they were bought.
         access_duration_months = $6,
         access_duration_minutes = $7,
+        -- Also not COALESCE, for the same reason: a teacher must be able to
+        -- clear the category back to uncategorised once they have set one.
+        category = $8,
         updated_at = NOW()
-    WHERE id = $8
+    WHERE id = $9
     RETURNING *
-`, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, id]);
+`, [title, description, price, status, thumbnail_url, duration.months, testDuration.minutes, cat.value, id]);
 
         /*
          * This is the hook that actually fires in practice: a teacher builds a

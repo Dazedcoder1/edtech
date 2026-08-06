@@ -19,6 +19,7 @@ import testRoutes from "./routes/test.js";        // ✅ Test routes (NEW)
 import notificationRoutes from "./routes/notifications.js";
 import supportRoutes from "./routes/support.js";
 import homeRoutes from "./routes/home.js";
+import settingsRoutes from "./routes/settings.js";
 import { verifyMail } from "./utils/mailer.js";
 
 // Import config
@@ -66,6 +67,10 @@ async function setupDatabase() {
                 thumbnail_url TEXT,
                 price DECIMAL(10,2) DEFAULT 0,
                 status VARCHAR(50) DEFAULT 'draft',
+                -- Nullable on purpose: 'uncategorised' is a real state, and a
+                -- course with no category shows under "All" only rather than
+                -- being filed under a board it may not belong to.
+                category VARCHAR(64),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE,
@@ -413,6 +418,19 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ DEFAULT NULL`);
 
         /*
+         * Drives the filter chips on the student home screen.
+         *
+         * VARCHAR(64) rather than an enum type: the list of boards will change
+         * (a new exam, a new state board) and adding a value to a Postgres enum
+         * is a migration, whereas adding one to the shared JS constant is a
+         * one-line change validated in the API.
+         */
+        await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS category VARCHAR(64) DEFAULT NULL`);
+        // The home screen filters on it and nothing else selects by it, so one
+        // partial index over the rows that actually have a value is enough.
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_courses_category ON courses(category) WHERE category IS NOT NULL`);
+
+        /*
          * Backfill: everything already published pre-dates this feature.
          *
          * Without this, the first publish-toggle on any existing course would
@@ -551,6 +569,68 @@ async function setupDatabase() {
             UPDATE users SET email_verified = TRUE
              WHERE email IS NOT NULL AND email_verified IS NOT TRUE
                AND created_at < NOW()
+        `);
+
+        // ============================================
+        // PLATFORM APPEARANCE
+        // ============================================
+        /*
+         * One row, enforced by a CHECK on a constant primary key.
+         *
+         * These are platform-wide settings, not per-user preferences — a second
+         * row would mean two answers to "what does the site look like" with
+         * nothing to say which wins. The constraint makes that unrepresentable
+         * rather than merely discouraged.
+         */
+        /*
+         * Widths sized to the longest allowed value, not guessed.
+         *
+         * density was VARCHAR(10) and "comfortable" is eleven characters, so
+         * inserting the default row failed with "value too long" — and because
+         * setupDatabase catches its own errors, the failure appeared as a log
+         * line while everything after it in this block silently never ran.
+         *
+         * The allowed values live in routes/settings.js; if any gains a longer
+         * option these need widening to match. 32 leaves room to do that
+         * without another migration.
+         */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS platform_settings (
+                id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                theme VARCHAR(40) DEFAULT 'default',
+                mode VARCHAR(32) DEFAULT 'light',
+                density VARCHAR(32) DEFAULT 'comfortable',
+                updated_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        `);
+
+        /*
+         * Widen columns on installs created before the fix.
+         *
+         * CREATE TABLE IF NOT EXISTS does nothing to a table that already
+         * exists, so a database that got the narrow version keeps it — and
+         * every attempt to save "comfortable" would go on failing.
+         */
+        await pool.query(`ALTER TABLE platform_settings ALTER COLUMN mode TYPE VARCHAR(32)`);
+        await pool.query(`ALTER TABLE platform_settings ALTER COLUMN density TYPE VARCHAR(32)`);
+
+        /*
+         * The visual language, separate from the palette.
+         *
+         * 'brutal' is what the app was built in and stays the default, so
+         * nothing changes for an existing install until someone chooses
+         * otherwise.
+         */
+        await pool.query(
+            `ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS style VARCHAR(32) DEFAULT 'brutal'`
+        );
+
+        // Seed the single row so reads never have to cope with its absence.
+        await pool.query(`
+            INSERT INTO platform_settings (id, theme, mode, density, style)
+            VALUES (1, 'eduverse', 'light', 'comfortable', 'soft')
+            ON CONFLICT (id) DO NOTHING
         `);
 
         // ============================================
@@ -698,6 +778,7 @@ app.use("/api/test", testRoutes);      // ✅ Test routes (NEW)
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/home", homeRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // ============================================
 // HLS Proxy Route

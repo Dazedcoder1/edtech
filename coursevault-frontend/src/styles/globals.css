@@ -368,3 +368,506 @@ input[type="search"]::-ms-clear {
   width: 0;
   height: 0;
 }
+
+/* ==========================================================================
+   THEMING
+   ==========================================================================
+
+   The app was written with literal colours baked into utility classes —
+   bg-[#F26B4D], bg-white, border-black and so on, across roughly forty
+   components. Rewriting all of them to read from variables would be a very
+   large change with a lot of room for missed spots.
+
+   Instead the generated utility classes are redefined here. Tailwind emits a
+   real rule for every arbitrary value it sees (bg-[#F26B4D] becomes
+   .bg-\[\#F26B4D\]), and those rules can be overridden like any other. So a
+   theme is a set of variables, and one block of overrides points the existing
+   classes at them.
+
+   Two consequences worth knowing:
+
+   - These selectors must stay in sync with the palette actually in use. A new
+     hard-coded colour added to a component will not follow the theme until it
+     is listed here.
+   - !important is used deliberately. Tailwind utilities and these overrides
+     have the same specificity, so without it the winner would depend on
+     stylesheet order, which is not something to leave to chance.
+   ========================================================================== */
+
+:root {
+  /* Brand accents, in rough order of prominence. */
+  /*
+   * Deepened from #F26B4D.
+   *
+   * Eight components put white text on this fill, and at #F26B4D that was
+   * 3.01:1 — below AA for normal text and hard to read on a phone outdoors.
+   * #C0451F is the same hue at 5.11:1. The bright original survives as
+   * --skin-accent-soft, for fills that carry dark text.
+   */
+  --skin-accent:      #C0451F;   /* primary action, white text on it */
+  --skin-accent-soft: #F26B4D;   /* the original orange, dark text on it */
+  --skin-mint:        #A7E2D1;   /* success, secondary action    */
+  --skin-yellow:      #F9E076;   /* attention, badges            */
+  --skin-blue:        #87CEFA;   /* informational                */
+  --skin-plum:        #932973;   /* banners                      */
+  --skin-sand:        #F4DFD8;   /* page background, tab strip   */
+  --skin-cream:       #FDF1E9;   /* app background               */
+
+  /* Surfaces and text. These are what dark mode actually changes. */
+  --skin-surface:     #FFFFFF;   /* cards, panels                */
+  --skin-surface-2:   #F4F4F4;   /* insets, wells                */
+  --skin-surface-3:   #F3F4F6;   /* gray-100 equivalents         */
+  --skin-ink:         #111111;   /* body text, borders           */
+  /*
+   * Both darkened from Tailwind's gray-500/400 after measuring.
+   * #6B7280 reached only 4.36:1 on the tinted page backgrounds and #9CA3AF
+   * just 2.54:1 on white — under AA in both cases. These clear it on every
+   * palette, including the lightest.
+   */
+  --skin-ink-soft:    #686F7D;   /* secondary text               */
+  --skin-ink-faint:   #8E949F;   /* tertiary text                */
+  --skin-line:        #111111;   /* the heavy brutalist border   */
+
+  /* Spacing multiplier, driven by density. */
+  --skin-density: 1;
+}
+
+/* ------------------------------------------------------------- palettes */
+
+/*
+   Eduverse — the indigo/violet scheme from the reference design.
+
+   Deliberately less saturated in the background than the other palettes: that
+   look leans on near-white cards floating on a faint lavender-grey, and the
+   contrast between the two is what gives it depth. A stronger page colour
+   would flatten the cards into it.
+
+   Intended with style="soft"; the picker selects both together. It still works
+   in brutal, it just reads as a different design.
+*/
+[data-theme="eduverse"] {
+  --skin-accent:      #4F46E5;   /* indigo — primary buttons, active nav   */
+  --skin-accent-soft: #6366F1;
+  --skin-mint:        #DCFCE7;   /* the green tile                          */
+  --skin-yellow:      #FFEDD5;   /* the peach streak badge                  */
+  --skin-blue:        #DBEAFE;   /* the blue tile                           */
+  --skin-plum:        #312E81;   /* the deep indigo banner                  */
+  --skin-sand:        #EEF0F8;   /* section backgrounds                     */
+  --skin-cream:       #F5F6FA;   /* the page                                */
+
+  --skin-surface:     #FFFFFF;
+  --skin-surface-2:   #F5F6FA;
+  --skin-surface-3:   #EEF0F8;
+  --skin-ink:         #1F2937;
+  --skin-ink-soft:    #686F7D;
+  --skin-ink-faint:   #8E949F;
+  --skin-line:        #E5E7EB;   /* hairline, not a heavy outline           */
+}
+
+/*
+   The tile icons in that design are each a different colour, not all the
+   accent. Without this every quick-action circle would come out indigo and
+   the row would lose the thing that makes it readable at a glance.
+*/
+[data-theme="eduverse"] .bg-\[\#87CEFA\] { background-color: #DBEAFE !important; }
+[data-theme="eduverse"] .bg-\[\#A7E2D1\] { background-color: #DCFCE7 !important; }
+[data-theme="eduverse"] .bg-\[\#F9E076\] { background-color: #FFEDD5 !important; }
+[data-theme="eduverse"] .bg-\[\#F26B4D\] { background-color: #4F46E5 !important; }
+[data-theme="eduverse"] .text-\[\#F26B4D\] { color: #4F46E5 !important; }
+
+/*
+   Even in brutal style this palette wants a light border. A 2px near-black
+   outline over these pastels is the one combination that looks like a mistake
+   rather than a choice.
+*/
+[data-theme="eduverse"] .border-black,
+[data-theme="eduverse"] .brutal-border {
+  border-color: var(--skin-line) !important;
+}
+
+/*
+   Lagoon.
+
+   Built from five given colours: #001219, #005F73, #0A9396, #EE9B00, #FFFFFA.
+
+   The amber is deliberately not the accent. It reaches only 2.25:1 against
+   white, and eight components put white text on --skin-accent, so using it
+   there would have made every primary button unreadable. It carries dark text
+   as the attention colour instead, where it measures 8.47:1.
+
+   The text greys and surface tints are not from the given five — those are
+   the identity colours, and the supporting values were solved against the
+   contrast thresholds rather than picked to match.
+*/
+[data-theme="lagoon"] {
+  --skin-accent:      #005F73;   /* deep teal — carries white at 7.28:1     */
+  --skin-accent-soft: #0A9396;   /* the mid teal, for dark-text fills       */
+  --skin-ink:         #001219;   /* the deepest given colour                */
+  --skin-ink-soft:    #267787;   /* solved: 4.62:1 on the lightest surface  */
+  --skin-ink-faint:   #5795A1;   /* solved: 3.02:1, the large-text bar      */
+
+  --skin-surface:     #FFFFFA;   /* the given paper                         */
+  --skin-surface-2:   #E9F5F1;
+  --skin-surface-3:   #DFF1ED;
+  --skin-cream:       #F0F9F4;   /* the page                                */
+  --skin-sand:        #DFF1ED;
+
+  --skin-mint:        #B6DFDC;
+  --skin-yellow:      #F9DCA3;   /* the amber, diluted so dark text reads   */
+  --skin-blue:        #C7DCDC;
+  --skin-plum:        #001219;   /* banners — white on it is 19.08:1        */
+  --skin-line:        #D1E2E2;
+}
+
+[data-theme="ocean"] {
+  --skin-accent:      #2563EB;
+  --skin-accent-soft: #60A5FA;
+  --skin-mint:        #A5F3FC;
+  --skin-yellow:      #BAE6FD;
+  --skin-blue:        #38BDF8;
+  --skin-plum:        #1E3A8A;
+  --skin-sand:        #DBEAFE;
+  --skin-cream:       #EFF6FF;
+}
+
+[data-theme="forest"] {
+  --skin-accent:      #15803D;
+  --skin-accent-soft: #4ADE80;
+  --skin-mint:        #BBF7D0;
+  --skin-yellow:      #D9F99D;
+  --skin-blue:        #86EFAC;
+  --skin-plum:        #14532D;
+  --skin-sand:        #DCFCE7;
+  --skin-cream:       #F0FDF4;
+}
+
+[data-theme="sunset"] {
+  --skin-accent:      #DB2777;
+  --skin-accent-soft: #FB923C;
+  --skin-mint:        #FDE68A;
+  --skin-yellow:      #FCD34D;
+  --skin-blue:        #F9A8D4;
+  --skin-plum:        #831843;
+  --skin-sand:        #FCE7F3;
+  --skin-cream:       #FFF1F2;
+}
+
+[data-theme="mono"] {
+  --skin-accent:      #111111;
+  --skin-accent-soft: #4B5563;
+  --skin-mint:        #E5E7EB;
+  --skin-yellow:      #F3F4F6;
+  --skin-blue:        #D1D5DB;
+  --skin-plum:        #1F2937;
+  --skin-sand:        #F3F4F6;
+  --skin-cream:       #FAFAFA;
+}
+
+/* ------------------------------------------------------------ dark mode
+
+   Only surfaces, text and the border colour change. The accents stay: a
+   palette that also inverted its brand colours would stop being the same
+   theme, and the accents were chosen to sit on either a light or dark card.
+
+   --skin-line moves off pure black. A black border on a near-black surface is
+   invisible, which would erase the outlines the whole visual language is
+   built from.                                                             */
+
+[data-mode="dark"] {
+  --skin-surface:     #1C1C1E;
+  --skin-surface-2:   #2A2A2E;
+  --skin-surface-3:   #343438;
+  --skin-ink:         #F5F5F5;
+  --skin-ink-soft:    #A1A1AA;
+  --skin-ink-faint:   #71717A;
+  --skin-line:        #4A4A50;
+  --skin-sand:        #232326;
+  --skin-cream:       #121214;
+}
+
+[data-mode="dark"] body {
+  background-color: var(--skin-cream);
+  color: var(--skin-ink);
+}
+
+/*
+   Pale fills keep dark text in dark mode.
+
+   The mint, yellow and blue badges are light by design in every palette. In
+   dark mode the default text colour flips to near-white, which put #F5F5F5 on
+   #A7E2D1 — 1.33:1, effectively unreadable. Darkening the fills instead would
+   cost the palettes their identity, so the text is pinned rather than the
+   background.
+
+   `color` cascades, so nested labels inside a badge inherit it too.
+*/
+[data-mode="dark"] .bg-\[\#A7E2D1\],
+[data-mode="dark"] .bg-\[\#F9E076\],
+[data-mode="dark"] .bg-\[\#87CEFA\],
+[data-mode="dark"] .bg-\[\#8ed9c3\],
+[data-mode="dark"] .bg-\[\#F4DFD8\] {
+  color: #111827 !important;
+}
+
+/* ---------------------------------------------------------- the overrides */
+
+body {
+  background-color: var(--skin-cream);
+  color: var(--skin-ink);
+}
+
+/* Brand colours */
+.bg-\[\#F26B4D\]  { background-color: var(--skin-accent) !important; }
+.text-\[\#F26B4D\]{ color:            var(--skin-accent) !important; }
+.bg-\[\#8ed9c3\]  { background-color: var(--skin-accent-soft) !important; }
+.bg-\[\#A7E2D1\]  { background-color: var(--skin-mint) !important; }
+.bg-\[\#F9E076\]  { background-color: var(--skin-yellow) !important; }
+.bg-\[\#87CEFA\]  { background-color: var(--skin-blue) !important; }
+.bg-\[\#932973\]  { background-color: var(--skin-plum) !important; }
+.bg-\[\#F4DFD8\]  { background-color: var(--skin-sand) !important; }
+.bg-\[\#FDF1E9\]  { background-color: var(--skin-cream) !important; }
+.bg-\[\#E5CFC8\]  { background-color: var(--skin-surface-2) !important; }
+.bg-\[\#DCC6BE\]  { background-color: var(--skin-surface-3) !important; }
+.bg-\[\#F4F4F4\]  { background-color: var(--skin-surface-2) !important; }
+
+/* Surfaces */
+.bg-white     { background-color: var(--skin-surface) !important; }
+.bg-gray-50   { background-color: var(--skin-surface-2) !important; }
+.bg-gray-100  { background-color: var(--skin-surface-3) !important; }
+
+/* Text */
+.text-black      { color: var(--skin-ink) !important; }
+.text-gray-400   { color: var(--skin-ink-faint) !important; }
+.text-gray-500   { color: var(--skin-ink-soft) !important; }
+.text-gray-600   { color: var(--skin-ink-soft) !important; }
+.text-gray-700   { color: var(--skin-ink-soft) !important; }
+
+/* Borders and the hard shadow that defines the style */
+.border-black    { border-color: var(--skin-line) !important; }
+.brutal-border   { border-color: var(--skin-line) !important; }
+
+/*
+   Shadows are written as arbitrary values with a literal #111 inside, e.g.
+   shadow-[4px_4px_0px_0px_#111]. Each distinct offset is its own class, so
+   each needs its own override — there is no wildcard for arbitrary values.
+   These four cover every shadow in the codebase.
+*/
+[data-mode="dark"] .shadow-\[1px_1px_0px_0px_\#111\] { box-shadow: 1px 1px 0px 0px var(--skin-line) !important; }
+[data-mode="dark"] .shadow-\[2px_2px_0px_0px_\#111\] { box-shadow: 2px 2px 0px 0px var(--skin-line) !important; }
+[data-mode="dark"] .shadow-\[3px_3px_0px_0px_\#111\] { box-shadow: 3px 3px 0px 0px var(--skin-line) !important; }
+[data-mode="dark"] .shadow-\[4px_4px_0px_0px_\#111\] { box-shadow: 4px 4px 0px 0px var(--skin-line) !important; }
+[data-mode="dark"] .shadow-\[6px_6px_0px_0px_\#111\] { box-shadow: 6px 6px 0px 0px var(--skin-line) !important; }
+[data-mode="dark"] .shadow-\[8px_8px_0px_0px_\#111\] { box-shadow: 8px 8px 0px 0px var(--skin-line) !important; }
+
+/*
+   Inputs and selects.
+
+   Browsers paint form controls with their own defaults, which stay light in
+   dark mode and produce white-on-white text. color-scheme tells the browser
+   which set to use, and covers the dropdown list, the caret and the scrollbar
+   in one declaration.
+*/
+[data-mode="dark"] {
+  color-scheme: dark;
+}
+[data-mode="dark"] input,
+[data-mode="dark"] textarea,
+[data-mode="dark"] select {
+  background-color: var(--skin-surface-2);
+  color: var(--skin-ink);
+}
+[data-mode="dark"] input::placeholder,
+[data-mode="dark"] textarea::placeholder {
+  color: var(--skin-ink-faint);
+}
+
+/*
+   Red is left alone in both modes.
+
+   Error states are the one place where a themed colour would be actively
+   harmful: "this went wrong" has to read the same whichever palette is
+   selected, and a forest-green error message does not.
+*/
+
+/* ------------------------------------------------------------- density
+
+   Compact scales the padding utilities down rather than changing any
+   component. The transform is proportional, so the layout keeps its rhythm
+   instead of collapsing unevenly.
+
+   Deliberately limited to padding and vertical gaps. Shrinking font sizes or
+   touch targets would make the app harder to use rather than denser, and a
+   28px button is below the threshold where a finger reliably hits it.        */
+
+[data-density="compact"] {
+  --skin-density: 0.7;
+}
+
+[data-density="compact"] .p-3   { padding: calc(0.75rem * var(--skin-density)); }
+[data-density="compact"] .p-4   { padding: calc(1rem    * var(--skin-density)); }
+[data-density="compact"] .p-5   { padding: calc(1.25rem * var(--skin-density)); }
+[data-density="compact"] .p-6   { padding: calc(1.5rem  * var(--skin-density)); }
+[data-density="compact"] .p-8   { padding: calc(2rem    * var(--skin-density)); }
+
+[data-density="compact"] .py-3  { padding-top: calc(0.75rem * var(--skin-density)); padding-bottom: calc(0.75rem * var(--skin-density)); }
+[data-density="compact"] .py-4  { padding-top: calc(1rem    * var(--skin-density)); padding-bottom: calc(1rem    * var(--skin-density)); }
+
+[data-density="compact"] .gap-4 { gap: calc(1rem    * var(--skin-density)); }
+[data-density="compact"] .gap-6 { gap: calc(1.5rem  * var(--skin-density)); }
+[data-density="compact"] .gap-8 { gap: calc(2rem    * var(--skin-density)); }
+
+[data-density="compact"] .mb-6  { margin-bottom: calc(1.5rem * var(--skin-density)); }
+[data-density="compact"] .mb-8  { margin-bottom: calc(2rem   * var(--skin-density)); }
+[data-density="compact"] .mt-8  { margin-top:    calc(2rem   * var(--skin-density)); }
+
+/*
+   Colour transitions on theme change, but not on page load.
+
+   The `.skin-ready` class is added by the provider once the saved theme has
+   been applied, so switching themes animates while the initial paint does
+   not — an app that fades in from the wrong colours on every load looks
+   broken rather than polished.
+*/
+.skin-ready body,
+.skin-ready .bg-white,
+.skin-ready .border-black {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skin-ready body,
+  .skin-ready .bg-white,
+  .skin-ready .border-black {
+    transition: none;
+  }
+}
+
+/* ==========================================================================
+   VISUAL STYLE
+   ==========================================================================
+
+   Separate from the palette. `data-theme` decides which colours; this decides
+   the language they are drawn in.
+
+   brutal — what the app was built in. Thick black borders, hard offset
+            shadows, flat fills. The default; nothing below applies.
+
+   soft   — rounded cards, no heavy outlines, blurred elevation. The style of
+            most current mobile education apps.
+
+   Implemented the same way as the palettes: by redefining the utility classes
+   already in the markup. The alternative — a variant prop on every component —
+   would mean touching all forty of them and would still miss the ones that
+   compose classNames inline.
+   ========================================================================== */
+
+[data-style="soft"] {
+  /* Elevation, expressed once so every surface lifts consistently. */
+  --skin-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.10);
+  --skin-shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.06);
+  --skin-shadow-lg: 0 12px 16px -4px rgba(16, 24, 40, 0.08), 0 4px 6px -2px rgba(16, 24, 40, 0.04);
+
+  /* A hairline instead of a 2–3px black outline. */
+  --skin-hairline: rgba(16, 24, 40, 0.08);
+}
+
+[data-style="soft"][data-mode="dark"] {
+  --skin-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.40);
+  --skin-shadow-md: 0 4px 10px rgba(0, 0, 0, 0.45);
+  --skin-shadow-lg: 0 12px 24px rgba(0, 0, 0, 0.50);
+  --skin-hairline: rgba(255, 255, 255, 0.10);
+}
+
+/* --------------------------------------------------------------- borders
+
+   The borders are not removed, only made faint. Setting width to zero would
+   collapse the layout everywhere a 2px border contributes to spacing, and
+   several components size themselves against it.                            */
+
+[data-style="soft"] .border-black,
+[data-style="soft"] .brutal-border {
+  border-color: var(--skin-hairline) !important;
+}
+
+[data-style="soft"] .border-2,
+[data-style="soft"] .border-\[3px\] {
+  border-width: 1px !important;
+}
+
+/* --------------------------------------------------------------- shadows
+
+   Each hard shadow maps to a blurred one of similar visual weight. The
+   offsets in the class names are what distinguish them, so each is listed.  */
+
+[data-style="soft"] .shadow-\[1px_1px_0px_0px_\#111\],
+[data-style="soft"] .shadow-\[2px_2px_0px_0px_\#111\] {
+  box-shadow: var(--skin-shadow-sm) !important;
+}
+[data-style="soft"] .shadow-\[3px_3px_0px_0px_\#111\],
+[data-style="soft"] .shadow-\[4px_4px_0px_0px_\#111\] {
+  box-shadow: var(--skin-shadow-md) !important;
+}
+[data-style="soft"] .shadow-\[6px_6px_0px_0px_\#111\],
+[data-style="soft"] .shadow-\[8px_8px_0px_0px_\#111\] {
+  box-shadow: var(--skin-shadow-lg) !important;
+}
+[data-style="soft"] .shadow-\[0px_-2px_0px_0px_\#111\] {
+  box-shadow: 0 -1px 2px rgba(16, 24, 40, 0.06) !important;
+}
+[data-style="soft"] .shadow-\[4px_4px_0px_0px_\#F26B4D\] {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--skin-accent) 25%, transparent) !important;
+}
+
+/* ---------------------------------------------------------------- radius
+
+   Larger and more uniform. The brutal style mixes xl and 2xl fairly freely;
+   soft reads better when the whole page agrees.                             */
+
+[data-style="soft"] .rounded-lg   { border-radius: 0.75rem !important; }
+[data-style="soft"] .rounded-xl   { border-radius: 1rem !important; }
+[data-style="soft"] .rounded-2xl  { border-radius: 1.25rem !important; }
+[data-style="soft"] .rounded-3xl  { border-radius: 1.5rem !important; }
+
+/* ------------------------------------------------------------ hover lift
+
+   The brutal hover slides an element toward its shadow. With a blurred
+   shadow that reads as a wobble, so it becomes a small rise instead.        */
+
+[data-style="soft"] .hover\:translate-x-\[2px\]:hover,
+[data-style="soft"] .hover\:translate-y-\[2px\]:hover {
+  transform: translateY(-1px) !important;
+}
+[data-style="soft"] .hover\:shadow-\[1px_1px_0px_0px_\#111\]:hover,
+[data-style="soft"] .hover\:shadow-\[2px_2px_0px_0px_\#111\]:hover {
+  box-shadow: var(--skin-shadow-md) !important;
+}
+[data-style="soft"] .hover\:shadow-none:hover {
+  box-shadow: var(--skin-shadow-sm) !important;
+}
+
+/* --------------------------------------------------------------- weight
+
+   Black type on every heading is part of the brutal look and too heavy for
+   this one. Bold stays bold, just not 900.                                  */
+
+[data-style="soft"] .font-black { font-weight: 700 !important; }
+
+/*
+   Buttons and inputs get a gentler resting state.
+
+   Only the accent-filled controls are touched. Repainting every white surface
+   would flatten the distinction between a card and a control, which is what
+   the borders were carrying before they were softened away.
+*/
+[data-style="soft"] input,
+[data-style="soft"] textarea,
+[data-style="soft"] select {
+  border-color: var(--skin-hairline) !important;
+  background-color: var(--skin-surface-2);
+}
+[data-style="soft"] input:focus,
+[data-style="soft"] textarea:focus,
+[data-style="soft"] select:focus {
+  border-color: color-mix(in srgb, var(--skin-accent) 60%, transparent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--skin-accent) 18%, transparent) !important;
+}

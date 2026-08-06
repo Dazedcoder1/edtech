@@ -8,6 +8,7 @@ import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
 import PasswordInput from '../components/ui/PasswordInput';
 import { BOARDS, STATES } from '../utils/studentOptions';
+import AppearanceSettings from '../components/educator/AppearanceSettings';
 
 function Field({ icon: Icon, label, hint, children }) {
   return (
@@ -149,7 +150,9 @@ export default function ProfilePage() {
   if (!user) return null;
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8 flex flex-col gap-6">
+    // No horizontal padding: <main> already provides the page gutter, and
+    // adding one here compounded to 40px a side on a phone.
+    <div className="max-w-2xl mx-auto py-6 md:py-8 flex flex-col gap-5 md:gap-6">
       <div>
         <h1 className="text-3xl md:text-4xl font-black tracking-tight">Your Profile</h1>
         <p className="text-sm text-gray-600 font-medium mt-1">
@@ -301,6 +304,12 @@ export default function ProfilePage() {
           </Button>
         </div>
       </form>
+
+      {/*
+        Educators only. The panel changes the platform for every user, so a
+        student seeing it — even disabled — would suggest they had a say.
+      */}
+      {user.role === 'educator' && <AppearanceSettings />}
 
       {/* --------------------------------------------------------- password */}
       <form

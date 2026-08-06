@@ -21,7 +21,7 @@ export default function AuthPage() {
   const verifying = Boolean(pendingVerification);
 
   return (
-    <div className="min-h-screen bg-[#F4DFD8] flex items-center justify-center p-6 relative overflow-hidden">
+    <div className="min-h-screen bg-[#F4DFD8] flex items-center justify-center p-4 sm:p-6 relative overflow-hidden">
       <div className="absolute top-20 left-20 text-[#F26B4D] animate-float-icon opacity-50"><Bot size={64} /></div>
       <div className="absolute bottom-20 right-20 text-[#87CEFA] animate-float-icon opacity-50" style={{ animationDelay: '1s' }}><BookOpen size={64} /></div>
 
