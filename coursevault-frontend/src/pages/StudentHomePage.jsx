@@ -399,6 +399,12 @@ export default function StudentHomePage() {
   // would defeat every useMemo that depends on it.
   const courses = useMemo(() => data?.courses ?? [], [data]);
   const featured = useMemo(() => data?.featured ?? [], [data]);
+  /*
+   * Every published course, joined or not. The chips count and filter against
+   * this rather than against enrolments, so a course a teacher tagged today
+   * is findable today.
+   */
+  const catalog = useMemo(() => data?.catalog ?? [], [data]);
   const streak = data?.streak ?? 0;
 
   /*
@@ -412,9 +418,9 @@ export default function StudentHomePage() {
    */
   const countByCategory = useMemo(() => {
     const n = {};
-    for (const c of courses) if (c.category) n[c.category] = (n[c.category] ?? 0) + 1;
+    for (const c of catalog) if (c.category) n[c.category] = (n[c.category] ?? 0) + 1;
     return n;
-  }, [courses]);
+  }, [catalog]);
 
   /*
    * The chip actually in force.
@@ -427,14 +433,32 @@ export default function StudentHomePage() {
    */
   const activeCategory = category;
 
-  const filtered = useMemo(() => {
+  const matches = (c) => {
     const q = query.trim().toLowerCase();
-    return courses.filter((c) => {
-      if (activeCategory !== 'all' && c.category !== activeCategory) return false;
-      if (!q) return true;
-      return c.title?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q);
-    });
-  }, [courses, query, activeCategory]);
+    if (activeCategory !== 'all' && c.category !== activeCategory) return false;
+    if (!q) return true;
+    return c.title?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q);
+  };
+
+  /** The student's own courses — these keep their progress bar. */
+  const filtered = useMemo(
+    () => courses.filter(matches),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [courses, query, activeCategory]
+  );
+
+  /*
+   * Published courses in this category that the student has not joined.
+   *
+   * Excluded by id rather than by the `enrolled` flag alone: a course can be
+   * in both lists — enrolments carry progress that the catalogue row does not
+   * — and showing it twice under one chip looks like duplicated data.
+   */
+  const available = useMemo(() => {
+    const mine = new Set(courses.map((c) => c.id));
+    return catalog.filter((c) => !mine.has(c.id) && matches(c));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalog, courses, query, activeCategory]);
 
 
   if (loading) {
@@ -564,8 +588,14 @@ export default function StudentHomePage() {
         ))}
       </div>
 
-      {/* ----------------------------------------------------------- classes */}
-      <div className="flex items-center justify-between gap-2 mb-2">
+      {/* ----------------------------------------------------------- classes
+
+          Hidden when the student has nothing in this category: an empty
+          "Your Classes" heading above a list of courses they could join
+          reads as a failure rather than as a starting point.               */}
+      <div className={`flex items-center justify-between gap-2 mb-2 ${
+        filtered.length === 0 && available.length > 0 ? 'hidden' : ''
+      }`}>
         <h2 className="font-black text-sm md:text-lg uppercase">Your Classes</h2>
         <button
           type="button"
@@ -576,7 +606,12 @@ export default function StudentHomePage() {
         </button>
       </div>
 
-      {filtered.length === 0 ? (
+      {/*
+        The empty card only appears when there is genuinely nothing to show.
+        With courses available below it, "No classes under NEET" contradicts
+        the list immediately underneath it.
+      */}
+      {filtered.length === 0 && available.length === 0 ? (
         <div className="border-2 border-black rounded-xl bg-white p-6 text-center shadow-[2px_2px_0px_0px_#111]">
           <BookOpen size={30} strokeWidth={2} className="mx-auto mb-2 text-gray-600" />
           {/* Three different situations, three different messages. "Nothing
@@ -622,6 +657,91 @@ export default function StudentHomePage() {
           ))}
         </div>
       )}
+
+      {/* ------------------------------------------------- available courses
+
+          Published courses in this category the student has not joined.
+
+          Kept in a separate section rather than mixed into the list above,
+          because the two are not the same kind of thing: one is work in
+          progress, the other is an invitation. Merging them would put a
+          course with no progress bar between two that have one and leave the
+          reader working out which is which.                                */}
+      {available.length > 0 && (
+        <div className="mt-6">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="font-black text-sm md:text-lg uppercase">
+              {activeCategory === 'all'
+                ? 'More courses'
+                : `More in ${categoryLabel(activeCategory)}`}
+            </h2>
+            <span className="text-[11px] font-bold text-gray-500">
+              {available.length} available
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {available.map((c) => (
+              <AvailableRow
+                key={c.id}
+                course={c}
+                onOpen={() => navigate(`/course/${c.id}`)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A course the student has not joined.
+ *
+ * Deliberately quieter than CourseRow: no progress bar, because there is no
+ * progress, and a 0% bar on something never started reads as falling behind
+ * rather than as an invitation. The play button becomes an arrow for the same
+ * reason — play implies resuming.
+ */
+function AvailableRow({ course, onOpen }) {
+  const free = !course.price || Number(course.price) === 0;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => e.key === 'Enter' && onOpen()}
+      className="flex gap-2.5 p-2 rounded-xl border-2 border-black bg-white/70 shadow-[2px_2px_0px_0px_#111] cursor-pointer hover:bg-white hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[1px_1px_0px_0px_#111] transition-all"
+    >
+      <div className="shrink-0 w-14 h-14 rounded-lg border-2 border-black overflow-hidden bg-[#F4DFD8] flex items-center justify-center">
+        {course.thumbnail_url ? (
+          <img src={resolveMediaUrl(course.thumbnail_url)} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <BookOpen size={20} strokeWidth={2} className="text-black/40" />
+        )}
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <h3 className="font-black text-sm leading-tight truncate">{course.title}</h3>
+        <div className="flex items-center gap-2.5 mt-0.5 text-[10px] font-bold text-gray-500">
+          <span className="flex items-center gap-1">
+            <BookOpen size={11} strokeWidth={3} /> {course.module_count}
+          </span>
+          <span className="flex items-center gap-1">
+            <Users size={11} strokeWidth={3} /> {course.student_count}
+          </span>
+          {/* Price stated up front. Finding out at the checkout that a course
+              costs money is a worse moment than reading it here. */}
+          <span className={`px-1.5 rounded-full ${free ? 'bg-[#A7E2D1]' : 'bg-[#F9E076]'} text-black`}>
+            {free ? 'Free' : `₹${course.price}`}
+          </span>
+        </div>
+      </div>
+
+      <div className="shrink-0 self-center w-8 h-8 rounded-full border-2 border-black bg-white flex items-center justify-center shadow-[2px_2px_0px_0px_#111]">
+        <ArrowRight size={14} strokeWidth={3} />
+      </div>
     </div>
   );
 }

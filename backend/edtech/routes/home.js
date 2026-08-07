@@ -211,6 +211,46 @@ router.get("/", authMiddleware, async (req, res) => {
              LIMIT 8
         `, [userId]);
 
+        /*
+         * Every published course, whether or not this student has joined it.
+         *
+         * The category chips were filtering `courses`, which comes from the
+         * enrolments table — so a teacher tagging a new course "NEET" made it
+         * appear nowhere until somebody was already enrolled in it. That is
+         * backwards: the chips are how a student is meant to *find* courses.
+         *
+         * Nothing private is exposed. A published course's title, cover and
+         * category are already public on the Explore page; this is the same
+         * data, surfaced where students actually look.
+         *
+         * Top-level only. Child courses belong to their parent and appear
+         * inside it, so listing them here would show a student two entries
+         * for what they think of as one course.
+         */
+        const catalog = await pool.query(`
+            SELECT
+                c.id,
+                c.title,
+                c.description,
+                c.thumbnail_url,
+                c.category,
+                c.price,
+                (SELECT COUNT(*)::int FROM modules m
+                  WHERE m.course_id = c.id AND m.is_active = true) AS module_count,
+                (SELECT COUNT(DISTINCT e2.user_id)::int FROM enrollments e2
+                  WHERE e2.course_id = c.id AND e2.status = 'active') AS student_count,
+                EXISTS (
+                    SELECT 1 FROM enrollments e
+                     WHERE e.course_id = c.id AND e.user_id = $1
+                       AND ${activeEnrolmentSql('e')}
+                ) AS enrolled
+              FROM courses c
+             WHERE c.is_active = true
+               AND c.status = 'published'
+               AND c.parent_course_id IS NULL
+             ORDER BY c.created_at DESC
+        `, [userId]);
+
         const days = activity.rows.map((r) => r.day);
         /*
          * One value for both, read once.
@@ -225,6 +265,7 @@ router.get("/", authMiddleware, async (req, res) => {
             activeDays: days.length,
             recentDays: lastSevenDays(days, today),
             courses: courses.rows,
+            catalog: catalog.rows,
             featured: featured.rows,
             counts: counts.rows[0] ?? { notes_count: 0, quiz_count: 0, quizzes_done: 0 },
         });
