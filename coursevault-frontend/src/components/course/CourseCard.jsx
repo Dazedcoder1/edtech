@@ -2,6 +2,7 @@ import React from 'react';
 import { Play, BookOpen, Lock, CheckCircle2 } from 'lucide-react';
 import Badge from '../ui/Badge.jsx';
 import { getBgColor, getTagColor } from '../../utils/format.js';
+import { categoryLabel } from '../../constants/courseCategories.js';
 import { resolveMediaUrl } from '../../services/api.js';
 
 const formatPrice = (price) =>
@@ -122,7 +123,18 @@ export default function CourseCard({ course, index, onClick, onBuyCourse, isMyLe
         {/* BOTTOM CONTENT AREA */}
         <div className="p-2.5 md:p-6 flex flex-col flex-1 min-w-0 relative">
           <div className="hidden md:block mb-4">
-            <Badge colorClass={tagColor}>{course.category || 'General'}</Badge>
+            {/*
+              The stored value is an id — "hp_board", "neet". Rendering it raw
+              meant a teacher who picked "HP Board" saw "hp_board" on the card,
+              which reads as a different thing from what they chose.
+
+              Untagged says so plainly. It used to say "General", which looks
+              like a category the course belongs to rather than an unset field,
+              so nobody could tell which courses still needed one.
+            */}
+            <Badge colorClass={course.category ? tagColor : 'bg-gray-200 text-gray-600'}>
+              {course.category ? categoryLabel(course.category) : 'No category'}
+            </Badge>
           </div>
           <h3 className="text-sm md:text-2xl font-bold leading-tight mb-0.5 md:mb-2 pr-1 line-clamp-2">{course.title}</h3>
           {/* The description tells a student what the course covers; the

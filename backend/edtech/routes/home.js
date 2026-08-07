@@ -239,15 +239,34 @@ router.get("/", authMiddleware, async (req, res) => {
                   WHERE m.course_id = c.id AND m.is_active = true) AS module_count,
                 (SELECT COUNT(DISTINCT e2.user_id)::int FROM enrollments e2
                   WHERE e2.course_id = c.id AND e2.status = 'active') AS student_count,
+                parent.title AS parent_title,
                 EXISTS (
                     SELECT 1 FROM enrollments e
                      WHERE e.course_id = c.id AND e.user_id = $1
                        AND ${activeEnrolmentSql('e')}
                 ) AS enrolled
               FROM courses c
+              LEFT JOIN courses parent ON parent.id = c.parent_course_id
              WHERE c.is_active = true
                AND c.status = 'published'
-               AND c.parent_course_id IS NULL
+               /*
+                * Subjects are included, not just top-level classes.
+                *
+                * This app nests Class -> Subject, and a teacher can set a
+                * category on either. Restricting to parent_course_id IS NULL
+                * meant tagging a subject "NEET" did nothing at all: the value
+                * saved, and the course appeared under no chip. Tagging
+                * something and having it vanish is worse than not offering
+                * the field.
+                *
+                * A subject only appears if its parent is published and active
+                * too. Otherwise a subject inside an unpublished class would
+                * leak out on its own, which is the opposite mistake.
+                */
+               AND (
+                   c.parent_course_id IS NULL
+                   OR (parent.status = 'published' AND parent.is_active = true)
+               )
              ORDER BY c.created_at DESC
         `, [userId]);
 

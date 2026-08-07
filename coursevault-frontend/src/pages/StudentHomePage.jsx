@@ -724,6 +724,11 @@ function AvailableRow({ course, onOpen }) {
 
       <div className="min-w-0 flex-1">
         <h3 className="font-black text-sm leading-tight truncate">{course.title}</h3>
+        {/* Subjects carry their class name. Two courses called "Physics" under
+            different classes are otherwise indistinguishable in this list. */}
+        {course.parent_title && (
+          <p className="text-[10px] font-bold text-gray-500 truncate">in {course.parent_title}</p>
+        )}
         <div className="flex items-center gap-2.5 mt-0.5 text-[10px] font-bold text-gray-500">
           <span className="flex items-center gap-1">
             <BookOpen size={11} strokeWidth={3} /> {course.module_count}
