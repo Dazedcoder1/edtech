@@ -105,9 +105,26 @@ export function ThemeProvider({ children }) {
          * login page must still get the school's palette even though
          * /settings/me will fail for them.
          */
+        /*
+         * The personal request is skipped entirely when there is no token.
+         *
+         * It would 401, and fetchAPI answers a 401 by clearing the token and
+         * navigating to /login — which is where a signed-out visitor already
+         * is, so the navigation remounts this provider, which fires the
+         * request again. That is a reload loop, and the cause is a request
+         * for the colour of the buttons.
+         *
+         * redirectOn401 is belt and braces for the other case: a token that
+         * exists but has expired. That should send the user to sign in, but
+         * through the request they actually made, not through this one.
+         */
+        const hasSession = Boolean(localStorage.getItem('token'));
+
         const [platformRes, mineRes] = await Promise.allSettled([
           fetchAPI('/settings/appearance'),
-          fetchAPI('/settings/me'),
+          hasSession
+            ? fetchAPI('/settings/me', { redirectOn401: false })
+            : Promise.reject(new Error('no session')),
         ]);
         if (cancelled) return;
 

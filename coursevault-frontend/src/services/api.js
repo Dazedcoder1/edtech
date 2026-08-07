@@ -101,7 +101,20 @@ export const uploadVideoWithProgress = (
 };
 
 // Existing fetchAPI Utility
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.redirectOn401=true]
+ *   A 401 normally means the session died, and bouncing to the sign-in page is
+ *   the right answer. It is the wrong answer for a background request that is
+ *   not on the user's behalf — a decorative one that simply has nothing to say
+ *   when signed out. Such a request must be able to fail quietly, or it turns
+ *   "no session" into a navigation, and if it runs on mount it turns that into
+ *   a reload loop.
+ */
 export const fetchAPI = async (endpoint, options = {}) => {
+  const { redirectOn401 = true, ...rest } = options;
+  options = rest;
+
   const token = localStorage.getItem('token');
   const headers = { ...options.headers };
 
@@ -121,9 +134,17 @@ export const fetchAPI = async (endpoint, options = {}) => {
       : await response.text();
 
     if (!response.ok) {
-      if (response.status === 401) {
+      if (response.status === 401 && redirectOn401) {
         localStorage.removeItem('token');
-        window.location.href = '/login';
+        /*
+         * A hard navigation, not a router push — it must clear all in-memory
+         * state. Guarded so a page that is already here does not reload
+         * itself: /login makes the same unauthenticated calls, so without the
+         * guard one failing background request reloads the page forever.
+         */
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
       }
 
       // Express answers an unmatched route with an HTML error page. Passing
