@@ -190,11 +190,18 @@ router.delete("/", authMiddleware, async (req, res) => {
             WHERE user_id = $1 AND course_id = $2
         `, [userId, courseId]);
 
-        await pool.query(`
-            UPDATE video_progress 
-            SET updated_at = NOW()
-            WHERE user_id = $1 AND course_id = $2
-        `, [userId, courseId]);
+        /*
+         * Deliberately not touching video_progress here.
+         *
+         * This used to run `UPDATE video_progress SET updated_at = NOW()`,
+         * setting no other column. Harmless when written — but updated_at is
+         * now the only evidence the streak has that a student studied on a
+         * given day, so leaving a course marked today as a study day, and a
+         * student could farm a streak by enrolling and unenrolling.
+         *
+         * The rows are left exactly as they were: progress is kept so that
+         * re-enrolling resumes where they stopped.
+         */
 
         res.json({
             success: true,

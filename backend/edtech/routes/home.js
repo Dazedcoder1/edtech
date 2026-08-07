@@ -10,6 +10,7 @@ import express from "express";
 import pool from "../config/database.js";
 import { authOnly as authMiddleware } from "../middleware/auth.js";
 import { activeEnrolmentSql } from "../utils/enrollmentAccess.js";
+import { APP_TIMEZONE, todayInAppZone, dayToUtcMs, DAY_MS } from "../utils/appTime.js";
 
 const router = express.Router();
 
@@ -21,29 +22,33 @@ const router = express.Router();
  * next. It breaks only once a full day has passed with nothing.
  *
  * @param {string[]} isoDays distinct activity days, newest first, as YYYY-MM-DD
+ * @param {string} todayIso today in the platform's timezone, as YYYY-MM-DD
  */
-export function streakFromDays(isoDays, today = new Date()) {
+export function streakFromDays(isoDays, todayIso = todayInAppZone()) {
     if (!isoDays || isoDays.length === 0) return 0;
 
-    const dayMs = 86_400_000;
-    const asUtcDay = (d) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    const todayNum = asUtcDay(today);
+    /*
+     * Takes today as a YYYY-MM-DD string rather than a Date.
+     *
+     * A Date has no opinion about which calendar day it is until you pick a
+     * zone, and the two obvious readings — the server's zone or UTC — are both
+     * wrong for a school in India. Passing the day in makes the caller state
+     * which calendar it means, and it is the same one the SQL bucketed on.
+     */
+    const todayNum = dayToUtcMs(todayIso);
 
-    // Parsed as UTC midnights so daylight-saving shifts cannot make two
-    // adjacent days look 23 or 25 hours apart and break the arithmetic.
-    const days = [...new Set(isoDays)]
-        .map((s) => {
-            const [y, m, d] = String(s).slice(0, 10).split("-").map(Number);
-            return Date.UTC(y, m - 1, d);
-        })
+    // Parsed as UTC midnights so a daylight-saving change cannot make two
+    // adjacent dates 23 or 25 hours apart and break the arithmetic.
+    const days = [...new Set(isoDays.map((d) => String(d).slice(0, 10)))]
+        .map(dayToUtcMs)
         .sort((a, b) => b - a);
 
-    const gapFromToday = (todayNum - days[0]) / dayMs;
+    const gapFromToday = (todayNum - days[0]) / DAY_MS;
     if (gapFromToday > 1) return 0;
 
     let streak = 1;
     for (let i = 1; i < days.length; i++) {
-        if ((days[i - 1] - days[i]) / dayMs === 1) streak++;
+        if ((days[i - 1] - days[i]) / DAY_MS === 1) streak++;
         else break;
     }
     return streak;
@@ -63,17 +68,13 @@ export function streakFromDays(isoDays, today = new Date()) {
  * @param {string[]} isoDays distinct activity days as YYYY-MM-DD
  * @returns {{day: string, active: boolean, dow: number}[]} dow: 0 = Sunday
  */
-export function lastSevenDays(isoDays, today = new Date()) {
+export function lastSevenDays(isoDays, todayIso = todayInAppZone()) {
     const active = new Set((isoDays ?? []).map((d) => String(d).slice(0, 10)));
-    const dayMs = 86_400_000;
-
-    // Anchored to a UTC midnight so adding days cannot land on a 23- or
-    // 25-hour boundary and skip or repeat a date across a DST change.
-    const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    const todayNum = dayToUtcMs(todayIso);
 
     const out = [];
     for (let i = 6; i >= 0; i--) {
-        const d = new Date(todayUtc - i * dayMs);
+        const d = new Date(todayNum - i * DAY_MS);
         const iso = d.toISOString().slice(0, 10);
         out.push({ day: iso, active: active.has(iso), dow: d.getUTCDay() });
     }
@@ -99,15 +100,17 @@ router.get("/", authMiddleware, async (req, res) => {
          */
         const activity = await pool.query(`
             SELECT DISTINCT day::text AS day FROM (
-                SELECT DATE(updated_at) AS day FROM video_progress WHERE user_id = $1
+                SELECT DATE(updated_at AT TIME ZONE 'UTC' AT TIME ZONE $2) AS day
+                  FROM video_progress WHERE user_id = $1
                 UNION
-                SELECT DATE(completed_at) AS day FROM quiz_attempts
+                SELECT DATE(completed_at AT TIME ZONE 'UTC' AT TIME ZONE $2) AS day
+                  FROM quiz_attempts
                  WHERE user_id = $1 AND completed_at IS NOT NULL
             ) AS days
             WHERE day IS NOT NULL
             ORDER BY day DESC
             LIMIT 400
-        `, [userId]);
+        `, [userId, APP_TIMEZONE]);
 
         /*
          * Enrolled courses with progress.
@@ -209,12 +212,18 @@ router.get("/", authMiddleware, async (req, res) => {
         `, [userId]);
 
         const days = activity.rows.map((r) => r.day);
+        /*
+         * One value for both, read once.
+         * Calling todayInAppZone() twice could straddle midnight and produce a
+         * streak and a strip that disagree about what day it is.
+         */
+        const today = todayInAppZone();
 
         res.json({
             success: true,
-            streak: streakFromDays(days),
+            streak: streakFromDays(days, today),
             activeDays: days.length,
-            recentDays: lastSevenDays(days),
+            recentDays: lastSevenDays(days, today),
             courses: courses.rows,
             featured: featured.rows,
             counts: counts.rows[0] ?? { notes_count: 0, quiz_count: 0, quizzes_done: 0 },

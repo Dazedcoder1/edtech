@@ -4,11 +4,11 @@ import {
   GraduationCap, BookOpen, MapPin, School,
 } from 'lucide-react';
 import { fetchAPI } from '../services/api';
+import AppearanceButton from '../components/ui/AppearanceButton.jsx';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
 import PasswordInput from '../components/ui/PasswordInput';
 import { BOARDS, STATES } from '../utils/studentOptions';
-import AppearanceSettings from '../components/educator/AppearanceSettings';
 
 function Field({ icon: Icon, label, hint, children }) {
   return (
@@ -148,237 +148,319 @@ export default function ProfilePage() {
   };
 
   if (!user) return null;
+  const initials = (user.name || '').trim().split(/\s+/).filter(Boolean)
+    .slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '—';
 
   return (
-    // No horizontal padding: <main> already provides the page gutter, and
-    // adding one here compounded to 40px a side on a phone.
-    <div className="max-w-2xl mx-auto py-6 md:py-8 flex flex-col gap-5 md:gap-6">
-      <div>
-        <h1 className="text-3xl md:text-4xl font-black tracking-tight">Your Profile</h1>
+    /*
+     * Two columns from lg up: forms on the left, settings on the right.
+     *
+     * This was a single 672px column inside a 1400px page, so on a laptop
+     * roughly half the screen was empty and the six cards made a scroll far
+     * longer than the content warranted. A teacher's form is the shortest of
+     * all — three fields — which made the imbalance worst for exactly the
+     * person this page matters most to.
+     *
+     * No horizontal padding: <main> already provides the page gutter, and
+     * adding one here compounded to 40px a side on a phone.
+     */
+    <div className="max-w-5xl mx-auto py-6 md:py-8">
+      <div className="mb-5 md:mb-6">
+        <h1 className="text-2xl md:text-4xl font-black tracking-tight">Your Profile</h1>
         <p className="text-sm text-gray-600 font-medium mt-1">
-          {/* Falls back to the mobile number: email is optional now, and
-              "Signed in as" followed by nothing looks like a broken page. */}
-          Signed in as <strong>{user.email || user.phone || user.name}</strong>
-          <span className="ml-2 px-2 py-0.5 text-xs uppercase font-black border-2 border-black rounded-full bg-[#F9E076]">
-            {user.role}
-          </span>
+          Manage your details, security and how the site looks.
         </p>
       </div>
 
-      {/* ---------------------------------------------------------- contact */}
-      <form
-        onSubmit={saveProfile}
-        className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-4"
-      >
-        <h2 className="font-black text-lg uppercase">Your Details</h2>
-
-        <Banner tone="error">{profileError}</Banner>
-        <Banner tone="success">{profileSuccess}</Banner>
-
-        <Field icon={User} label="Full name">
-          <input
-            className={inputClass}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            required
-          />
-        </Field>
-
-        {/*
-          Shown but not editable. Rendering it as plain text rather than a
-          disabled <input> avoids implying it might become editable, and the
-          server rejects a changed address regardless — this is the label on
-          the rule, not the rule itself.
-        */}
-        <Field
-          icon={Phone}
-          label="Mobile number"
-          hint="You sign in with this. It can be corrected, but not removed."
-        >
-          <input
-            type="tel"
-            inputMode="numeric"
-            className={inputClass}
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="98765 43210"
-            required
-          />
-        </Field>
-
-        {canAddEmail ? (
-          <Field
-            icon={Mail}
-            label="Email address"
-            hint="Optional — but once you save one, it can't be changed."
+      <div className="grid gap-5 md:gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] items-start">
+        {/* ------------------------------------------------------ left column */}
+        <div className="flex flex-col gap-5 md:gap-6 min-w-0">
+          {/* -------------------------------------------------------- contact */}
+          <form
+            onSubmit={saveProfile}
+            className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-4"
           >
-            <input
-              type="email"
-              className={inputClass}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-            />
-          </Field>
-        ) : (
-          <Field
-            icon={Mail}
-            label="Email address"
-            hint="This can also be used to sign in, and it can't be changed."
-          >
-            <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
-              <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
-                {user.email}
-              </span>
-              <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                <Lock size={12} strokeWidth={3} /> Locked
-              </span>
+            <h2 className="font-black text-lg uppercase">Your Details</h2>
+
+            <Banner tone="error">{profileError}</Banner>
+            <Banner tone="success">{profileSuccess}</Banner>
+
+            {/*
+              Two fields per row once there is room. A teacher only has three
+              fields here, and one per row left the card mostly whitespace
+              beside a form that fits comfortably in half the width.
+            */}
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field icon={User} label="Full name">
+                <input
+                  className={inputClass}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  required
+                />
+              </Field>
+
+              <Field
+                icon={Phone}
+                label="Mobile number"
+                hint="You sign in with this."
+              >
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  className={inputClass}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="98765 43210"
+                  required
+                />
+              </Field>
+
+              {/*
+                Shown but not editable once set. Rendered as plain text rather
+                than a disabled <input> so it does not look like it might
+                become editable; the server rejects a changed address
+                regardless — this is the label on the rule, not the rule.
+              */}
+              {canAddEmail ? (
+                <Field
+                  icon={Mail}
+                  label="Email address"
+                  hint="Optional — but once you save one, it can't be changed."
+                >
+                  <input
+                    type="email"
+                    className={inputClass}
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                  />
+                </Field>
+              ) : (
+                <Field
+                  icon={Mail}
+                  label="Email address"
+                  hint="This can also be used to sign in, and it can't be changed."
+                >
+                  <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
+                    <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
+                      {user.email}
+                    </span>
+                    <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                      <Lock size={12} strokeWidth={3} /> Locked
+                    </span>
+                  </div>
+                </Field>
+              )}
+
+              {isStudent && (
+                <>
+                  <Field
+                    icon={GraduationCap}
+                    label="Class"
+                    hint="Set when you signed up. Contact support if this is wrong."
+                  >
+                    <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
+                      <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
+                        {user.class_level || '—'}
+                      </span>
+                      <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
+                        <Lock size={12} strokeWidth={3} /> Locked
+                      </span>
+                    </div>
+                  </Field>
+
+                  <Field icon={BookOpen} label="Board">
+                    <select
+                      className={inputClass}
+                      value={board}
+                      onChange={(e) => setBoard(e.target.value)}
+                    >
+                      <option value="">Not set</option>
+                      {BOARDS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </Field>
+
+                  <Field icon={MapPin} label="State">
+                    <select
+                      className={inputClass}
+                      value={state}
+                      onChange={(e) => setState(e.target.value)}
+                    >
+                      <option value="">Not set</option>
+                      {STATES.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </Field>
+
+                  {/* Spans both columns: a school name is long enough that
+                      half a row truncates most of it. */}
+                  <div className="sm:col-span-2">
+                    <Field icon={School} label="School / College" hint="Optional.">
+                      <input
+                        className={inputClass}
+                        value={school}
+                        onChange={(e) => setSchool(e.target.value)}
+                        placeholder="Govt. Senior Secondary School"
+                      />
+                    </Field>
+                  </div>
+                </>
+              )}
             </div>
-          </Field>
-        )}
 
-        {isStudent && (
-          <>
-            <Field
-              icon={GraduationCap}
-              label="Class"
-              hint="Set when you signed up. Contact support if this is wrong."
-            >
-              <div className="flex items-center gap-2 rounded-lg border-2 border-black/15 bg-gray-100 px-3 py-2">
-                <span className="flex-1 min-w-0 truncate font-medium text-gray-700">
-                  {user.class_level || '—'}
-                </span>
-                <span className="flex items-center gap-1 shrink-0 text-[11px] font-bold uppercase tracking-wide text-gray-500">
-                  <Lock size={12} strokeWidth={3} /> Locked
-                </span>
-              </div>
-            </Field>
-
-            <Field icon={BookOpen} label="Board">
-              <select
-                className={inputClass}
-                value={board}
-                onChange={(e) => setBoard(e.target.value)}
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={savingProfile}
+                className="py-2.5 px-6 text-base rounded-xl border-2"
               >
-                <option value="">Not set</option>
-                {BOARDS.map((b) => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
-            </Field>
+                {savingProfile ? 'Saving...' : 'Save Changes'}
+              </Button>
+            </div>
+          </form>
 
-            <Field icon={MapPin} label="State">
-              <select
-                className={inputClass}
-                value={state}
-                onChange={(e) => setState(e.target.value)}
-              >
-                <option value="">Not set</option>
-                {STATES.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </Field>
+          {/* ------------------------------------------------------- password */}
+          <form
+            onSubmit={savePassword}
+            className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-4"
+          >
+            <h2 className="font-black text-lg uppercase">Change Password</h2>
 
-            <Field icon={School} label="School / College" hint="Optional.">
-              <input
+            <Banner tone="error">{pwError}</Banner>
+            <Banner tone="success">{pwSuccess}</Banner>
+
+            <Field icon={Lock} label="Current password">
+              <PasswordInput
                 className={inputClass}
-                value={school}
-                onChange={(e) => setSchool(e.target.value)}
-                placeholder="Govt. Senior Secondary School"
+                value={pwCurrent}
+                onChange={(e) => setPwCurrent(e.target.value)}
+                autoComplete="current-password"
+                required
               />
             </Field>
-          </>
-        )}
 
+            {/* The new pair side by side: they are entered together and
+                compared against each other, so they belong on one row. */}
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field icon={Lock} label="New password" hint="At least 8 characters.">
+                <PasswordInput
+                  className={inputClass}
+                  value={pwNew}
+                  onChange={(e) => setPwNew(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </Field>
 
-        <div className="flex justify-end">
-          <Button
-            type="submit"
-            variant="primary"
-            disabled={savingProfile}
-            className="py-2.5 px-6 text-base rounded-xl border-2"
+              <Field icon={Lock} label="Confirm new password">
+                <PasswordInput
+                  className={inputClass}
+                  value={pwConfirm}
+                  onChange={(e) => setPwConfirm(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                />
+              </Field>
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                variant="secondary"
+                disabled={savingPw}
+                className="py-2.5 px-6 text-base rounded-xl border-2"
+              >
+                {savingPw ? 'Updating...' : 'Update Password'}
+              </Button>
+            </div>
+          </form>
+        </div>
+
+        {/* ----------------------------------------------------- right column
+
+            Sticky on a tall screen so the settings stay in view while the
+            forms on the left are scrolled. `top-20` clears the sticky header. */}
+        <aside className="flex flex-col gap-4 lg:sticky lg:top-20">
+          {/* Identity. Replaces the "Signed in as ..." line, which was a
+              sentence doing a card's job. */}
+          <div className="border-[3px] border-black rounded-2xl bg-white p-5 shadow-[6px_6px_0px_0px_#111] flex flex-col items-center text-center">
+            <div
+              className="w-16 h-16 rounded-full border-2 border-black bg-[#F26B4D] text-white
+                         shadow-[3px_3px_0px_0px_#111] flex items-center justify-center
+                         font-black text-xl mb-3"
+              aria-hidden="true"
+            >
+              {initials}
+            </div>
+            <p className="font-black text-lg leading-tight break-words w-full">{user.name}</p>
+            {/* Falls back to the mobile number: email is optional, and an
+                empty line under a name looks like a failed load. */}
+            <p className="text-xs font-medium text-gray-600 mt-0.5 break-all w-full">
+              {user.email || user.phone}
+            </p>
+            <span className="mt-3 px-3 py-0.5 text-[11px] uppercase font-black border-2 border-black rounded-full bg-[#F9E076]">
+              {user.role}
+            </span>
+          </div>
+
+          {/*
+            Educators only. This sets the default for every user, so a student
+            seeing it — even disabled — would suggest they had a say. The
+            server enforces the same rule; this is the label on it.
+          */}
+          {user.role === 'educator' && (
+            <SettingCard
+              title="Platform appearance"
+              description="The default colours for everyone, students included."
+            >
+              <AppearanceButton scope="platform" />
+            </SettingCard>
+          )}
+
+          <SettingCard
+            title="Your appearance"
+            description="Pick your own colours. Changes the site for you only."
           >
-            {savingProfile ? 'Saving...' : 'Save Changes'}
-          </Button>
-        </div>
-      </form>
+            <AppearanceButton />
+          </SettingCard>
 
-      {/*
-        Educators only. The panel changes the platform for every user, so a
-        student seeing it — even disabled — would suggest they had a say.
-      */}
-      {user.role === 'educator' && <AppearanceSettings />}
-
-      {/* --------------------------------------------------------- password */}
-      <form
-        onSubmit={savePassword}
-        className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-4"
-      >
-        <h2 className="font-black text-lg uppercase">Change Password</h2>
-
-        <Banner tone="error">{pwError}</Banner>
-        <Banner tone="success">{pwSuccess}</Banner>
-
-        <Field icon={Lock} label="Current password">
-          <PasswordInput
-            className={inputClass}
-            value={pwCurrent}
-            onChange={(e) => setPwCurrent(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </Field>
-
-        <Field icon={Lock} label="New password" hint="At least 8 characters.">
-          <PasswordInput
-            className={inputClass}
-            value={pwNew}
-            onChange={(e) => setPwNew(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-        </Field>
-
-        <Field icon={Lock} label="Confirm new password">
-          <PasswordInput
-            className={inputClass}
-            value={pwConfirm}
-            onChange={(e) => setPwConfirm(e.target.value)}
-            autoComplete="new-password"
-            required
-          />
-        </Field>
-
-        <div className="flex justify-end">
-          <Button
-            type="submit"
-            variant="secondary"
-            disabled={savingPw}
-            className="py-2.5 px-6 text-base rounded-xl border-2"
-          >
-            {savingPw ? 'Updating...' : 'Update Password'}
-          </Button>
-        </div>
-      </form>
-
-      {/* ----------------------------------------------------------- session */}
-      <div className="border-[3px] border-black rounded-2xl bg-white p-5 md:p-6 shadow-[6px_6px_0px_0px_#111] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h2 className="font-black text-lg uppercase">Session</h2>
-          <p className="text-sm text-gray-600 font-medium mt-0.5">
-            Signs you out on this device only.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={handleSignOut}
-          className="h-11 shrink-0 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
-        >
-          <LogOut size={16} strokeWidth={2.5} /> Sign out
-        </button>
+          {/* Last, and the only card with a destructive action. */}
+          <SettingCard title="Session" description="Signs you out on this device only.">
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="w-full h-11 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
+            >
+              <LogOut size={16} strokeWidth={2.5} /> Sign out
+            </button>
+          </SettingCard>
+        </aside>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A sidebar card: a heading, a line of explanation, and one control.
+ *
+ * Extracted because there were three of these differing only in wording, and
+ * the next person adding a fourth would have copied whichever they scrolled
+ * to first.
+ */
+function SettingCard({ title, description, children }) {
+  return (
+    <div className="border-[3px] border-black rounded-2xl bg-white p-5 shadow-[6px_6px_0px_0px_#111] flex flex-col gap-3">
+      <div>
+        <h2 className="font-black text-base uppercase leading-tight">{title}</h2>
+        <p className="text-xs text-gray-600 font-medium mt-1">{description}</p>
+      </div>
+      {children}
     </div>
   );
 }

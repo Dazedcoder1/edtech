@@ -426,6 +426,24 @@ async function setupDatabase() {
          * one-line change validated in the API.
          */
         await pool.query(`ALTER TABLE courses ADD COLUMN IF NOT EXISTS category VARCHAR(64) DEFAULT NULL`);
+
+        /*
+         * Personal appearance override.
+         *
+         * All four are nullable, and null is meaningful: it means "follow
+         * whatever the school has set". A default of 'default' would be wrong
+         * — it would pin every existing account to one palette the moment this
+         * column appeared, and a teacher changing the platform theme would
+         * then have no effect on anyone.
+         *
+         * Separate from platform_settings on purpose. That table is one row
+         * for the whole site and only educators may write it; these columns
+         * are per-account and every user owns their own.
+         */
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pref_theme VARCHAR(64) DEFAULT NULL`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pref_mode VARCHAR(32) DEFAULT NULL`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pref_density VARCHAR(32) DEFAULT NULL`);
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS pref_style VARCHAR(32) DEFAULT NULL`);
         // The home screen filters on it and nothing else selects by it, so one
         // partial index over the rows that actually have a value is enough.
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_courses_category ON courses(category) WHERE category IS NOT NULL`);

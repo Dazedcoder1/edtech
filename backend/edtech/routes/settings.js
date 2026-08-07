@@ -146,4 +146,112 @@ router.put("/appearance", authMiddleware, async (req, res) => {
     }
 });
 
+/*
+ * ---------------------------------------------------------------------------
+ * Personal appearance
+ *
+ * Deliberately a different resource from /appearance above. That one is a
+ * single row for the whole site and only educators may write it; this one is
+ * per-account and every signed-in user owns their own.
+ *
+ * Keeping them apart is the whole safety property: there is no request a
+ * student can make to this route that reaches platform_settings, because the
+ * only row it can touch is WHERE id = req.user.id.
+ * ---------------------------------------------------------------------------
+ */
+
+/** Validate one field, treating null and "" as "clear the override". */
+function parsePref(value, allowed, name) {
+    if (value === undefined) return { ok: true, value: undefined }; // absent: leave alone
+    if (value === null || value === "") return { ok: true, value: null }; // explicit reset
+    if (!allowed.includes(value)) {
+        return { ok: false, error: `${name} must be one of: ${allowed.join(", ")}` };
+    }
+    return { ok: true, value };
+}
+
+/**
+ * GET /api/settings/me
+ *
+ * The caller's own override. Null fields mean "follow the platform".
+ */
+router.get("/me", authMiddleware, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT pref_theme, pref_mode, pref_density, pref_style
+               FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        const r = rows[0] ?? {};
+        res.json({
+            success: true,
+            theme: r.pref_theme ?? null,
+            mode: r.pref_mode ?? null,
+            density: r.pref_density ?? null,
+            style: r.pref_style ?? null,
+        });
+    } catch (err) {
+        console.error("GET /settings/me:", err);
+        // Answer with "no override" rather than failing: the app must still
+        // render, and no override simply means the platform default applies.
+        res.json({ success: false, theme: null, mode: null, density: null, style: null });
+    }
+});
+
+/**
+ * PUT /api/settings/me
+ * Body: { theme?, mode?, density?, style? }  — null on any field resets it.
+ *
+ * No role check, by design. Every signed-in user may change how the site
+ * looks *to them*; that is the difference between this and the platform row.
+ */
+router.put("/me", authMiddleware, async (req, res) => {
+    try {
+        const fields = [
+            ["theme", THEMES], ["mode", MODES],
+            ["density", DENSITIES], ["style", STYLES],
+        ];
+        const parsed = {};
+        for (const [name, allowed] of fields) {
+            const r = parsePref(req.body[name], allowed, name);
+            if (!r.ok) return res.status(400).json({ error: r.error });
+            parsed[name] = r.value;
+        }
+
+        /*
+         * Two parameters per column: the value, and whether it was present at
+         * all. COALESCE alone cannot express this, because null here means
+         * "reset to following the platform" rather than "leave unchanged" —
+         * without the second flag there would be no way to undo a choice.
+         */
+        const { rows } = await pool.query(`
+            UPDATE users
+               SET pref_theme   = CASE WHEN $2::bool THEN $1 ELSE pref_theme END,
+                   pref_mode    = CASE WHEN $4::bool THEN $3 ELSE pref_mode END,
+                   pref_density = CASE WHEN $6::bool THEN $5 ELSE pref_density END,
+                   pref_style   = CASE WHEN $8::bool THEN $7 ELSE pref_style END
+             WHERE id = $9
+            RETURNING pref_theme, pref_mode, pref_density, pref_style
+        `, [
+            parsed.theme ?? null, parsed.theme !== undefined,
+            parsed.mode ?? null, parsed.mode !== undefined,
+            parsed.density ?? null, parsed.density !== undefined,
+            parsed.style ?? null, parsed.style !== undefined,
+            req.user.id,
+        ]);
+
+        const r = rows[0] ?? {};
+        res.json({
+            success: true,
+            theme: r.pref_theme ?? null,
+            mode: r.pref_mode ?? null,
+            density: r.pref_density ?? null,
+            style: r.pref_style ?? null,
+        });
+    } catch (err) {
+        console.error("PUT /settings/me:", err);
+        res.status(500).json({ error: "Could not save your appearance" });
+    }
+});
+
 export default router;
