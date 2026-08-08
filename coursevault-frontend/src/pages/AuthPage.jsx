@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Bot, BookOpen } from 'lucide-react';
 import LoginForm from '../components/auth/LoginForm';
 import RegisterForm from '../components/auth/RegisterForm';
@@ -68,6 +69,19 @@ export default function AuthPage() {
             <RegisterForm />
           )}
         </div>
+
+        {/*
+          Outside the card, under the fold of the form.
+
+          Someone about to hand over their name, phone number and school should
+          be able to read what happens to it without having to go looking — and
+          this is the last screen before they do.
+        */}
+        <p className="relative text-center text-xs font-bold text-gray-500 mt-5">
+          <Link to="/privacypolicy" className="underline hover:text-black">
+            Privacy Policy
+          </Link>
+        </p>
       </div>
     </div>
   );

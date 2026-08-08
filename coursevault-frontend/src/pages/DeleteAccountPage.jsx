@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Trash2, Loader } from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -133,6 +133,16 @@ export default function DeleteAccountPage() {
                   longer linked to your name.
                 </li>
               </ul>
+              {/* The bullet above summarises; this is where the full rule
+                  lives. Someone weighing an irreversible choice should be one
+                  tap from the detail, not asked to trust a summary. */}
+              <p className="text-xs font-medium mt-2">
+                Full detail in the{' '}
+                <Link to="/privacypolicy" className="underline font-bold">
+                  Privacy Policy
+                </Link>
+                .
+              </p>
             </div>
 
             {error && (

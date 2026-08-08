@@ -8,6 +8,7 @@ import EducatorDashboardPage from './pages/EducatorDashboardPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import DeleteAccountPage from './pages/DeleteAccountPage.jsx';
+import PrivacyPolicyPage from './pages/PrivacyPolicyPage.jsx';
 import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
@@ -55,7 +56,16 @@ export default function App() {
           <Routes>
             {/* Public Auth Route */}
             <Route path="/login" element={<AuthPage />} />
-            
+
+            {/*
+              Public, and deliberately outside ProtectedRoute.
+
+              A privacy policy you have to sign in to read fails the two people
+              who most need it: someone deciding whether to register, and an app
+              store reviewer following the link from a listing.
+            */}
+            <Route path="/privacypolicy" element={<PrivacyPolicyPage />} />
+
             {/* Protected Application Routes */}
             <Route element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
               <Route path="/" element={<RoleHome />} />

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import AppearanceButton from '../components/ui/AppearanceButton.jsx';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
 import PasswordInput from '../components/ui/PasswordInput';
@@ -465,6 +465,17 @@ export default function ProfilePage() {
               </button>
             </SettingCard>
           )}
+
+          {/*
+            Not a card — a footer link. It belongs on the page (people look for
+            it in settings) but it is reference material, not an action, and
+            giving it a card would put it on a level with signing out.
+          */}
+          <p className="text-center text-xs font-bold text-gray-500 pt-1">
+            <Link to="/privacypolicy" className="underline hover:text-black">
+              Privacy Policy
+            </Link>
+          </p>
         </aside>
       </div>
     </div>
