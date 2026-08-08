@@ -575,6 +575,21 @@ async function setupDatabase() {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE`);
 
         /*
+         * When the person closed their own account.
+         *
+         * Deletion anonymises rather than removing the row: enrolment and
+         * payment records point at it, and losing those means a refund dispute
+         * months later has nothing to check against. The identifying columns
+         * are scrubbed and this timestamp records that it happened.
+         *
+         * It is also the flag every sign-in path checks. A scrubbed row still
+         * has a password hash — a random one nobody holds — so this is what
+         * makes "the account is gone" a stated rule rather than an accident of
+         * the hash being unguessable.
+         */
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL`);
+
+        /*
          * Everyone who already has an account keeps it usable.
          *
          * Existing accounts were created before verification existed, so their

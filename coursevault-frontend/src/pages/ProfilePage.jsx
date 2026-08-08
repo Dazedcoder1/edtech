@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  User, Mail, Phone, Lock, Check, AlertTriangle, LogOut,
+  User, Mail, Phone, Lock, Check, AlertTriangle, LogOut, Trash2,
   GraduationCap, BookOpen, MapPin, School,
 } from 'lucide-react';
 import { fetchAPI } from '../services/api';
 import AppearanceButton from '../components/ui/AppearanceButton.jsx';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Button from '../components/ui/Button';
 import PasswordInput from '../components/ui/PasswordInput';
@@ -43,6 +44,7 @@ function Banner({ tone, children }) {
 
 export default function ProfilePage() {
   const { user, applyProfileUpdate, logout } = useAuth();
+  const navigate = useNavigate();
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -440,6 +442,29 @@ export default function ProfilePage() {
               <LogOut size={16} strokeWidth={2.5} /> Sign out
             </button>
           </SettingCard>
+
+          {/*
+            Students only, and last on the page.
+
+            A teacher's account owns the courses they created, so closing it
+            would remove them for every student — that is an administrator's
+            decision, not a button here. The route refuses them as well; this
+            just avoids offering something that would be declined.
+          */}
+          {user.role === 'student' && (
+            <SettingCard
+              title="Delete account"
+              description="Remove your details permanently. This cannot be undone."
+            >
+              <button
+                type="button"
+                onClick={() => navigate('/deleteaccount')}
+                className="w-full h-11 inline-flex items-center justify-center gap-2 px-5 font-bold text-sm border-2 border-black rounded-xl bg-white text-red-600 shadow-[3px_3px_0px_0px_#111] hover:bg-red-50 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all"
+              >
+                <Trash2 size={16} strokeWidth={2.5} /> Delete my account
+              </button>
+            </SettingCard>
+          )}
         </aside>
       </div>
     </div>

@@ -15,7 +15,7 @@ import {
     BOARDS,
     STATES,
 } from "../utils/studentProfile.js";
-import { sendMail, passwordResetEmail, verifyEmailMessage, loginCodeEmail } from "../utils/mailer.js";
+import { sendMail, passwordResetEmail, verifyEmailMessage } from "../utils/mailer.js";
 
 const router = express.Router();
 
@@ -40,44 +40,19 @@ const publicUser = (u) => ({
 // EMAIL VERIFICATION
 // ============================================================
 
-/**
- * Accounts that skip the emailed code at sign-in.
+/*
+ * TWO_FACTOR_EXEMPT_EMAILS is gone.
  *
- * Set as a comma-separated list in the environment:
+ * It listed accounts allowed to skip the emailed code at sign-in. No login
+ * now sends one, so the setting exempted nobody from anything — and a config
+ * key that reads as a security control while doing nothing is worse than none
+ * at all: someone would eventually add an address to it believing that
+ * mattered.
  *
- *   TWO_FACTOR_EXEMPT_EMAILS=demo@example.com,admin@example.com
- *
- * Configured rather than hardcoded for two reasons. An address written into
- * source is published to everyone who can read the repository — and this one
- * is public. And changing who is exempt would otherwise need a code change and
- * a deploy, at exactly the moment someone is locked out and needs it now.
- *
- * Read once at module load: this is deployment configuration, and re-reading
- * it per request would invite the expectation that it changes without a
- * restart.
+ * The variable can be deleted from .env. Leaving it there is harmless; it is
+ * simply no longer read.
  */
-const TWO_FACTOR_EXEMPT = new Set(
-    String(process.env.TWO_FACTOR_EXEMPT_EMAILS || "")
-        .split(",")
-        .map((s) => s.trim().toLowerCase())
-        .filter(Boolean)
-);
 
-if (TWO_FACTOR_EXEMPT.size > 0) {
-    /*
-     * Announced at boot on purpose.
-     *
-     * An exemption is a deliberately weakened account. Left silent it would
-     * sit in an .env file long after the reason for it passed, and nobody
-     * reviewing the deployment would have any way to notice.
-     */
-    console.warn(
-        `⚠️  Two-factor is DISABLED for ${TWO_FACTOR_EXEMPT.size} account(s): ` +
-        `${[...TWO_FACTOR_EXEMPT].join(", ")}\n` +
-        `   These sign in with a password alone. Remove them from ` +
-        `TWO_FACTOR_EXEMPT_EMAILS when no longer needed.`
-    );
-}
 
 const VERIFY_TTL_MINUTES = 30;
 const VERIFY_MAX_ATTEMPTS = 5;
@@ -155,7 +130,7 @@ function stampLastLogin(userId) {
  *   and "confirm your address" reads as a mistake to someone who signed up
  *   months ago and is simply logging in.
  */
-async function issueVerificationCode(user, { purpose = "confirm" } = {}) {
+async function issueVerificationCode(user) {
     if (!user?.email) return { ok: false, reason: "no-email" };
 
     const recent = await pool.query(
@@ -182,10 +157,18 @@ async function issueVerificationCode(user, { purpose = "confirm" } = {}) {
         [user.id, user.email, codeHash, String(VERIFY_TTL_MINUTES)]
     );
 
-    const mail = purpose === "login"
-        ? loginCodeEmail({ name: user.name, code, minutes: VERIFY_TTL_MINUTES })
-        : verifyEmailMessage({ name: user.name, code, minutes: VERIFY_TTL_MINUTES });
-    await sendMail({ to: user.email, ...mail });
+    /*
+     * One wording, because there is one purpose left.
+     *
+     * This used to branch on "login" versus "confirm" and send differently
+     * worded mail. Nothing requests "login" now, so the branch had identical
+     * arms — a ternary that always picks the same value reads as a decision
+     * and is not one, which is worse than no branch at all.
+     */
+    await sendMail({
+        to: user.email,
+        ...verifyEmailMessage({ name: user.name, code, minutes: VERIFY_TTL_MINUTES }),
+    });
 
     return { ok: true };
 }
@@ -210,17 +193,12 @@ router.post("/send-verification", authMiddleware, async (req, res) => {
             return res.status(400).json({ error: "There is no email address on your account." });
         }
         /*
-         * A verified account can still need a code.
-         *
-         * This used to return early for them, on the assumption that a
-         * confirmed address had nothing left to do. Since every login is now
-         * challenged, that early return broke the Resend button for exactly
-         * the people who use the app most — their code screen is a second
-         * factor, not a confirmation.
+         * Still reachable for an account whose address was never confirmed —
+         * older records that predate the signup code. It is no longer part of
+         * signing in: login stopped asking for a code, so this is purely
+         * "confirm the address on file".
          */
-        const result = await issueVerificationCode(user, {
-            purpose: user.email_verified ? "login" : "confirm",
-        });
+        const result = await issueVerificationCode(user);
         if (!result.ok && result.reason === "rate-limited") {
             return res.status(429).json({
                 error: "Too many codes requested. Please wait an hour and try again.",
@@ -721,66 +699,52 @@ router.post("/login", async (req, res) => {
 
         const user = result.rows[0];
 
+        /*
+         * A closed account cannot sign in.
+         *
+         * In practice the scrubbed row is already unreachable — its address is
+         * a @deleted.invalid one nobody can receive at, and its password hash
+         * is random. But relying on that makes "the account is gone" an
+         * accident of unguessability rather than a rule. Stated here, it also
+         * holds if a backup restores an old hash.
+         *
+         * Same wording as a wrong password: whether an address once existed
+         * and was closed is not something a stranger needs confirmed.
+         */
+        if (user.deleted_at) {
+            return res.status(401).json({ error: "Invalid login or password" });
+        }
+
         const passwordMatch = await bcrypt.compare(password, user.password_hash);
         if (!passwordMatch) {
             return res.status(401).json({ error: "Invalid login or password" });
         }
 
         /*
-         * Every login is challenged, not just unverified ones.
+         * A correct password is the whole check.
          *
-         * A correct password now earns only a verify-scoped token: proof of
-         * something you know, waiting on proof of something you have. The
-         * session is issued by /verify-email once the emailed code is entered.
+         * Login used to issue only a verify-scoped token and email a code,
+         * making every sign-in two steps. That is real security, and removing
+         * it is a deliberate trade: sign-in is now one factor, so anyone with
+         * the password is in.
          *
-         * The one exception is an account with no email at all — those predate
-         * the requirement and have no second factor available. Refusing them
-         * would lock existing users out of their own accounts over a rule they
-         * were never given the chance to satisfy.
+         * What is NOT affected, and should not be confused with this:
+         *   - signup still proves the email address with a code before the
+         *     account exists, so addresses on file are still real;
+         *   - password reset still requires a code, so email remains the way
+         *     back into a locked-out account.
+         *
+         * Those are the two places a code actually protects something the
+         * password does not. The login challenge protected against a stolen
+         * password, which is a genuine loss — worth remembering if sign-ins
+         * from unexpected places ever start showing up.
          */
-        /*
-         * Straight in, no code.
-         *
-         * Two cases: an account with no email at all (predates the
-         * requirement, has no second factor available), and one listed in
-         * TWO_FACTOR_EXEMPT_EMAILS.
-         *
-         * The exemption is checked against the address stored on the account,
-         * not the identifier that was typed — otherwise signing in by mobile
-         * number would bypass the exemption check and still demand a code,
-         * which is the opposite of what the setting is for.
-         */
-        const exempt = user.email && TWO_FACTOR_EXEMPT.has(String(user.email).toLowerCase());
-
-        if (!user.email || exempt) {
-            stampLastLogin(user.id);
-            return res.json({
-                success: true,
-                message: "Login successful",
-                token: fullToken(user),
-                user: publicUser(user),
-            });
-        }
-
-        const sent = await issueVerificationCode(user, { purpose: "login" }).catch((err) => {
-            console.error("[login] could not send login code:", err.message);
-            return { ok: false, reason: "send-failed" };
-        });
-
-        if (!sent.ok && sent.reason === "rate-limited") {
-            return res.status(429).json({
-                error: "Too many sign-in codes requested. Please wait an hour and try again.",
-            });
-        }
+        stampLastLogin(user.id);
 
         res.json({
             success: true,
-            requiresVerification: true,
-            // Distinguishes a routine second factor from an unfinished signup,
-            // so the screen can say the right thing.
-            reason: user.email_verified === false ? "confirm-email" : "two-factor",
-            message: `We've sent a sign-in code to ${user.email}.`,
-            token: verifyScopedToken(user),
+            message: "Login successful",
+            token: fullToken(user),
             user: publicUser(user),
         });
 
@@ -794,15 +758,36 @@ router.post("/login", async (req, res) => {
 // GET /api/auth/me
 router.get("/me", authMiddleware, async (req, res) => {
     try {
+        /*
+         * deleted_at is selected so a session that outlived the account is
+         * caught here.
+         *
+         * The JWT stays cryptographically valid until it expires — closing an
+         * account cannot reach a token already issued. This route is what the
+         * app calls on load, so it is the practical place to end that session;
+         * without it, a tab left open on another device would keep working for
+         * up to a week.
+         */
         const result = await pool.query(
             `SELECT id, name, email, phone, role, class_level, board, state, school,
-                    email_verified, created_at
+                    email_verified, deleted_at, created_at
                FROM users WHERE id = $1`,
             [req.user.id]
         );
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "User not found" });
         }
+
+        /*
+         * 401, not 404: the client treats 401 as "your session is over" and
+         * clears the token, which is exactly what should happen to a tab still
+         * open on a closed account. A 404 would leave it holding a token and
+         * showing an error it cannot act on.
+         */
+        if (result.rows[0].deleted_at) {
+            return res.status(401).json({ error: "This account has been closed." });
+        }
+
         // The allowed values travel with the profile so the form's dropdowns
         // are populated from the same list the server validates against.
         res.json({
@@ -1274,6 +1259,129 @@ async function consumeResetCode({ email, code }, { consume }) {
 
     return { ok: true, userId };
 }
+
+// ROUTE 5: CLOSE YOUR OWN ACCOUNT
+// DELETE /api/auth/account
+/*
+ * Anonymise, do not DELETE the row.
+ *
+ * Fifteen tables reference users(id), and most of them cascade. A real DELETE
+ * would take enrolments, payments, quiz attempts and support threads with it —
+ * including the payment records the business is required to keep, and the other
+ * side of conversations a teacher may still need. Scrubbing the identifying
+ * columns achieves what the person is actually asking for (their name, email
+ * and phone number stop existing here) while leaving the rows that are not
+ * about them intact.
+ *
+ * Educators are refused outright, in the route and not only in the UI:
+ * courses.educator_id cascades, so closing a teacher's account would erase
+ * every course they built and every student's progress inside it. That is not
+ * a decision one button should be able to make.
+ */
+router.delete("/account", authMiddleware, async (req, res) => {
+    try {
+        const { password, confirm } = req.body || {};
+
+        if (req.user.role !== "student") {
+            return res.status(403).json({
+                error:
+                    "Teacher accounts can't be closed here. The courses you created belong " +
+                    "to this account and deleting it would remove them for every student. " +
+                    "Please contact your administrator.",
+            });
+        }
+
+        /*
+         * Typing DELETE is not security — anyone who can reach this route can
+         * type six letters. It is there to make the action deliberate. The
+         * password is the actual check: it proves the person at the keyboard is
+         * the account holder and not someone who found an unlocked phone.
+         */
+        if (confirm !== "DELETE") {
+            return res.status(400).json({ error: 'Type DELETE to confirm.' });
+        }
+        if (!password) {
+            return res.status(400).json({ error: "Enter your password to confirm." });
+        }
+
+        const found = await pool.query(
+            `SELECT id, password_hash, deleted_at FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+        if (found.rows.length === 0) {
+            return res.status(404).json({ error: "User not found" });
+        }
+        const user = found.rows[0];
+
+        // Already closed — report success rather than an error. The outcome the
+        // caller wants is the current state, and a second tap on a slow
+        // connection should not produce a scary failure.
+        if (user.deleted_at) {
+            return res.json({ success: true, message: "This account is already closed." });
+        }
+
+        const ok = await bcrypt.compare(password, user.password_hash);
+        if (!ok) {
+            /*
+             * 403, not 401. The session is perfectly valid; it is the
+             * confirmation that failed. A 401 would trip the client's
+             * session-expired handler and sign the person out for a typo — on
+             * the one screen where being unexpectedly logged out reads as "did
+             * it work?".
+             */
+            return res.status(403).json({ error: "That password is not correct." });
+        }
+
+        /*
+         * A random hash, not NULL.
+         *
+         * password_hash is NOT NULL, but more importantly bcrypt.compare
+         * against a null or empty hash has surprising behaviour across
+         * versions. A hash of random bytes is a password nobody knows and
+         * every comparison rejects.
+         */
+        const deadHash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+
+        await pool.query(
+            `UPDATE users
+                SET name = 'Deleted user',
+                    -- Unique (the column is), unroutable (.invalid is reserved
+                    -- by RFC 2606 and can never resolve), and clearly not a
+                    -- typo when someone reads it in the database later.
+                    email = 'deleted+' || id::text || '@deleted.invalid',
+                    phone = NULL,
+                    password_hash = $2,
+                    board = NULL,
+                    state = NULL,
+                    school = NULL,
+                    class_level = NULL,
+                    pref_theme = NULL,
+                    pref_mode = NULL,
+                    pref_density = NULL,
+                    pref_style = NULL,
+                    email_verified = FALSE,
+                    deleted_at = NOW()
+              WHERE id = $1 AND deleted_at IS NULL`,
+            [req.user.id, deadHash]
+        );
+
+        /*
+         * Pending codes are deleted, not kept.
+         *
+         * A live reset code is a way back into the account. Leaving one behind
+         * would mean a closed account could be reopened from an old email —
+         * the exact thing "you will not be able to sign in again" promises
+         * cannot happen.
+         */
+        await pool.query(`DELETE FROM password_resets WHERE user_id = $1`, [req.user.id]);
+        await pool.query(`DELETE FROM email_verifications WHERE user_id = $1`, [req.user.id]);
+
+        res.json({ success: true, message: "Your account has been closed." });
+    } catch (err) {
+        console.error("Account deletion error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // ROUTE 4: LOGOUT
 // POST /api/auth/logout

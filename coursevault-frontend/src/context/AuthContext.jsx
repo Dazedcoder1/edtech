@@ -76,6 +76,14 @@ export const AuthProvider = ({ children }) => {
    * Setting the user would let ProtectedRoute wave them into the app holding a
    * token every other endpoint refuses.
    *
+   * As of removing the sign-in second factor, no route sets that flag: login
+   * and registration both return a session outright. The branch is kept
+   * rather than deleted because it is the only thing standing between a
+   * verify-scoped token and ProtectedRoute — if a challenge is ever
+   * reintroduced and this has been removed, the failure is a user waved into
+   * the app holding a token every endpoint refuses, which reads as the whole
+   * site being broken rather than as a missing branch.
+   *
    * @returns {{requiresVerification: boolean, email?: string}}
    */
   const finishAuth = (data) => {

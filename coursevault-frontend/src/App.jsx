@@ -7,6 +7,7 @@ import CourseDetailPage from './pages/CourseDetailPage.jsx';
 import EducatorDashboardPage from './pages/EducatorDashboardPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import DeleteAccountPage from './pages/DeleteAccountPage.jsx';
 import StudentHomePage from './pages/StudentHomePage.jsx';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
@@ -73,6 +74,9 @@ export default function App() {
 
               {/* Any signed-in user — students and educators both. */}
               <Route path="/profile" element={<ProfilePage />} />
+              {/* Inside the protected routes: closing an account
+                  requires being signed in as that account. */}
+              <Route path="/deleteaccount" element={<DeleteAccountPage />} />
             </Route>
             
             {/* Catch-all Redirect */}
