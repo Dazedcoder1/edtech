@@ -198,14 +198,6 @@ export default function CourseDetailPage() {
 
   useEffect(() => { loadCourseData(); }, [id]);
 
-  // Inline locked-video cards trigger the same existing purchase flow as the
-  // course-level Enroll button.
-  useEffect(() => {
-    const startPurchase = () => handleEnroll(accessCourseId || course?.parent_course_id || course?.id);
-    window.addEventListener('coursevault:buy-course', startPurchase);
-    return () => window.removeEventListener('coursevault:buy-course', startPurchase);
-  }, [accessCourseId, course?.parent_course_id, course?.id, isEnrolling]);
-
   if (isLoading) return <div className="text-center font-bold py-20 text-gray-400">Loading...</div>;
   if (!course) return <div className="text-center font-bold py-20 text-red-500">Course not found.</div>;
 
@@ -689,7 +681,6 @@ export default function CourseDetailPage() {
         /* Fired when the video ends or the last PDF page is reached — the
            viewer is the only thing that knows whether it was actually read. */
         onCompleted={() => markContentComplete(activeContent?.id)}
-        onBuyCourse={() => handleEnroll(accessCourseId || course.parent_course_id || course.id)}
       />
 
       {/* Educator Modals */}

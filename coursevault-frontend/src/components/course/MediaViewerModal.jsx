@@ -4,7 +4,7 @@ import { fetchAPI, BASE_URL, MEDIA_ORIGIN } from '../../services/api.js';
 import Hls from 'hls.js';
 import PdfCanvasViewer from './PdfCanvasViewer.jsx';
 
-export default function MediaViewerModal({ content, courseId, isEnrolled, onClose, onCompleted, onBuyCourse }) {
+export default function MediaViewerModal({ content, courseId, isEnrolled, onClose, onCompleted }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
   // A directly-stored MP4 plays natively; HLS.js must not touch it.
@@ -402,14 +402,8 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
               </div>
               <h4 className="text-xl md:text-2xl font-black text-black">This Content Is Locked</h4>
               <p className="text-sm md:text-base text-gray-600 font-medium">
-                Buy this course to unlock this {isVideo ? 'video' : 'document'} and the rest of the learning material.
+                This {isVideo ? 'video' : 'document'} is available to enrolled students only. Please purchase the course to access it.
               </p>
-              {onBuyCourse && (
-                <button type="button" onClick={onBuyCourse}
-                  className="mt-1 px-6 py-3 bg-[#F26B4D] border-2 border-black rounded-xl font-black text-black shadow-[3px_3px_0px_0px_#111]">
-                  Buy Course
-                </button>
-              )}
               <p className="text-xs text-gray-500">Free preview content is still available.</p>
             </div>
           )}

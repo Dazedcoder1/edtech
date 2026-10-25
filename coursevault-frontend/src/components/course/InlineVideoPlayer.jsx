@@ -216,12 +216,7 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
         <div className="flex flex-col items-center justify-center gap-3 text-center py-10 px-5 bg-zinc-900 text-white">
           <div className="text-4xl" aria-hidden="true">🔒</div>
           <h4 className="text-lg font-black text-white">This Video Is Locked</h4>
-          <p className="text-sm text-zinc-300">Please buy this course to watch this video and unlock the full learning material.</p>
-          <button type="button"
-            onClick={() => window.dispatchEvent(new CustomEvent('coursevault:buy-course'))}
-            className="px-5 py-2.5 bg-[#F26B4D] border-2 border-white rounded-lg font-black text-black">
-            Buy Course
-          </button>
+          <p className="text-sm text-zinc-300">This video is available to enrolled students only. Please purchase the course to access it.</p>
           <p className="text-xs text-zinc-400">Free preview videos remain available.</p>
         </div>
       )}
