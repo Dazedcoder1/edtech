@@ -129,6 +129,50 @@ router.post("/enrollments/:enrollmentId/revoke", authMiddleware, async (req, res
     }
 });
 
+/**
+ * POST /api/analytics/enrollments/:enrollmentId/grant
+ * Restore an enrollment that was manually revoked. Payment records and
+ * learning history are intentionally left untouched.
+ */
+router.post("/enrollments/:enrollmentId/grant", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== "educator" && req.user.role !== "admin") {
+            return res.status(403).json({ error: "Only educators or admins can grant access." });
+        }
+
+        const { enrollmentId } = req.params;
+        const isAdmin = req.user.role === "admin";
+
+        const result = await pool.query(`
+            UPDATE enrollments e
+               SET status = 'active',
+                   updated_at = NOW()
+              FROM courses c
+             WHERE e.id = $1
+               AND c.id = e.course_id
+               AND (c.educator_id = $2 OR $3::boolean)
+               AND e.status IN ('inactive', 'revoked')
+         RETURNING e.id AS enrollment_id, e.user_id, e.course_id, e.status,
+                   e.payment_status, e.expires_at
+        `, [enrollmentId, req.user.id, isAdmin]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: "Revoked enrollment not found, or you do not have permission to manage it."
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: "Access granted again for this course enrollment.",
+            enrollment: result.rows[0]
+        });
+    } catch (err) {
+        console.error("POST /analytics/enrollments/:enrollmentId/grant:", err);
+        return res.status(500).json({ error: "Could not restore enrollment access." });
+    }
+});
+
 // ============================================================
 // ROUTE 1: EDUCATOR DASHBOARD OVERVIEW
 // GET /api/analytics/dashboard

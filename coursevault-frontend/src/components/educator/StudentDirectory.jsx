@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Users, Search, X, Loader, AlertTriangle, ShieldOff } from 'lucide-react';
+import { Users, Search, X, Loader, AlertTriangle, ShieldOff, ShieldCheck } from 'lucide-react';
 import { fetchAPI } from '../../services/api.js';
 
 /**
@@ -86,6 +86,32 @@ export default function StudentDirectory() {
       setActionMessage(`Access revoked for ${student} — ${course}.`);
     } catch (err) {
       setActionError(err.message || 'Could not revoke access. Please try again.');
+    } finally {
+      setRevokingId(null);
+    }
+  };
+
+  const grantAccess = async (r) => {
+    if (!r.enrollment_id || !['inactive', 'revoked'].includes(String(r.status || '').toLowerCase())) return;
+    const student = r.student_name || 'this student';
+    const course = r.course_title || 'this course';
+    if (!window.confirm(`Grant access again to ${student} for "${course}"? Existing payment and learning history will be kept.`)) return;
+
+    setRevokingId(r.enrollment_id);
+    setActionError('');
+    setActionMessage('');
+    try {
+      await fetchAPI(`/analytics/enrollments/${encodeURIComponent(r.enrollment_id)}/grant`, {
+        method: 'POST',
+      });
+      setRows((current) => current.map((row) =>
+        row.enrollment_id === r.enrollment_id
+          ? { ...row, status: 'active' }
+          : row
+      ));
+      setActionMessage(`Access granted again for ${student} — ${course}.`);
+    } catch (err) {
+      setActionError(err.message || 'Could not grant access. Please try again.');
     } finally {
       setRevokingId(null);
     }
@@ -223,7 +249,7 @@ export default function StudentDirectory() {
               </thead>
               <tbody>
                 {filtered.map((r) => (
-                  <StudentRow key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} revoking={revokingId === r.enrollment_id} />
+                  <StudentRow key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} onGrant={grantAccess} revoking={revokingId === r.enrollment_id} />
                 ))}
               </tbody>
             </table>
@@ -232,7 +258,7 @@ export default function StudentDirectory() {
           {/* ---------------------------------------------------- mobile cards */}
           <div className="md:hidden flex flex-col gap-2">
             {filtered.map((r) => (
-              <StudentCard key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} revoking={revokingId === r.enrollment_id} />
+              <StudentCard key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} onGrant={grantAccess} revoking={revokingId === r.enrollment_id} />
             ))}
           </div>
         </>
@@ -263,7 +289,7 @@ function useRowState(r) {
   };
 }
 
-function StudentRow({ r, onRevoke, revoking }) {
+function StudentRow({ r, onRevoke, onGrant, revoking }) {
   const { lapsed, accessLabel, lastLogin, lastLoginWarning } = useRowState(r);
 
   return (
@@ -304,15 +330,25 @@ function StudentRow({ r, onRevoke, revoking }) {
             {revoking ? <Loader size={12} className="animate-spin" /> : <ShieldOff size={12} />}
             {revoking ? 'Revoking…' : 'Revoke access'}
           </button>
+        ) : (r.status === 'inactive' || r.status === 'revoked') ? (
+          <button
+            type="button"
+            onClick={() => onGrant(r)}
+            disabled={revoking}
+            className="inline-flex items-center gap-1 rounded-lg border-2 border-black bg-[#18794E] px-2 py-1 text-xs font-black text-white disabled:opacity-50"
+          >
+            {revoking ? <Loader size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+            {revoking ? 'Granting…' : 'Grant access again'}
+          </button>
         ) : (
-          <span className="text-xs font-bold text-gray-500">{r.status === 'inactive' || r.status === 'revoked' ? 'Revoked' : '—'}</span>
+          <span className="text-xs font-bold text-gray-500">—</span>
         )}
       </td>
     </tr>
   );
 }
 
-function StudentCard({ r, onRevoke, revoking }) {
+function StudentCard({ r, onRevoke, onGrant, revoking }) {
   const { lapsed, accessLabel, lastLogin, lastLoginWarning } = useRowState(r);
 
   return (
@@ -355,7 +391,18 @@ function StudentCard({ r, onRevoke, revoking }) {
         </button>
       )}
       {(r.status === 'inactive' || r.status === 'revoked') && (
-        <p className="mt-2 text-xs font-black text-red-600">Access revoked / inactive</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <p className="text-xs font-black text-red-600">Access revoked / inactive</p>
+          <button
+            type="button"
+            onClick={() => onGrant(r)}
+            disabled={revoking}
+            className="inline-flex items-center gap-1 rounded-lg border-2 border-black bg-[#18794E] px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+          >
+            {revoking ? <Loader size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+            {revoking ? 'Granting…' : 'Grant access again'}
+          </button>
+        </div>
       )}
     </div>
   );
