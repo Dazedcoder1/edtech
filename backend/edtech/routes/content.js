@@ -1262,7 +1262,10 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
 
         if (!isOwner) {
             const courseIdToCheck = courseId || (courseCheck.rows.length > 0 ? courseCheck.rows[0].course_id : null);
-            if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
+            if (!courseIdToCheck) return res.status(403).json({
+                error: "Access denied.",
+                requiresEnrollment: true
+            });
 
             /*
              * Accept an enrolment on the parent course too.
@@ -1289,7 +1292,10 @@ router.get("/:id/pdf", authMiddleware, async (req, res) => {
             );
 
             if (enrollCheck.rows.length === 0 && !content.preview) {
-                return res.status(403).json({ error: "Access denied. You are not enrolled." });
+                return res.status(403).json({
+                    error: "Access denied. You are not enrolled.",
+                    requiresEnrollment: true
+                });
             }
         }
 
@@ -1372,7 +1378,10 @@ router.get("/:id/file", authMiddleware, async (req, res) => {
 
         if (!isOwner) {
             const courseIdToCheck = req.query.courseId || courseCheck.rows[0]?.course_id || null;
-            if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
+            if (!courseIdToCheck) return res.status(403).json({
+                error: "Access denied.",
+                requiresEnrollment: true
+            });
 
             const enrolled = await pool.query(
                 `SELECT 1 FROM enrollments
@@ -1387,7 +1396,10 @@ router.get("/:id/file", authMiddleware, async (req, res) => {
                 [userId, courseIdToCheck]
             );
             if (enrolled.rows.length === 0 && !content.preview) {
-                return res.status(403).json({ error: "Access denied. You are not enrolled." });
+                return res.status(403).json({
+                    error: "Access denied. You are not enrolled.",
+                    requiresEnrollment: true
+                });
             }
         }
 
@@ -1463,7 +1475,10 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
 
         if (!isOwner) {
             const courseIdToCheck = courseId || (courseCheck.rows.length > 0 ? courseCheck.rows[0].course_id : null);
-            if (!courseIdToCheck) return res.status(403).json({ error: "Access denied." });
+            if (!courseIdToCheck) return res.status(403).json({
+                error: "Access denied.",
+                requiresEnrollment: true
+            });
 
             /*
              * Accept an enrolment on the parent course too.
@@ -1490,7 +1505,10 @@ router.get("/:id/stream", authMiddleware, async (req, res) => {
             );
 
             if (enrollCheck.rows.length === 0 && !content.preview) {
-                return res.status(403).json({ error: "Access denied. You are not enrolled." });
+                return res.status(403).json({
+                    error: "Access denied. You are not enrolled.",
+                    requiresEnrollment: true
+                });
             }
         }
 

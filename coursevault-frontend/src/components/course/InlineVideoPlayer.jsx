@@ -9,6 +9,7 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
   // Set when the video was stored as a plain MP4 rather than transcoded.
   const [isProgressive, setIsProgressive] = useState(false);
   const [error, setError] = useState(null);
+  const [locked, setLocked] = useState(false);
 
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
@@ -29,8 +30,14 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
     setLoading(true);
     setStreamUrl(null);
     setError(null);
+    setLocked(false);
 
     const init = async () => {
+      if (!isEnrolled && !isPreview) {
+        setLocked(true);
+        setLoading(false);
+        return;
+      }
       try {
         if (!courseId) {
           throw new Error("Initializing content configurations... missing course parameter mappings.");
@@ -76,7 +83,11 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
           setError(streamData.message || 'Video processing has not completed yet.');
         }
       } catch (err) {
-        if (!cancelled) setError(err.message || 'Failed to initialize system video pipelines.');
+        if (!cancelled && (err?.status === 403 || err?.statusCode === 403 || err?.requiresEnrollment || /not enrolled|access denied/i.test(err?.message || ''))) {
+          setLocked(true);
+        } else if (!cancelled) {
+          setError(err.message || 'Failed to initialize system video pipelines.');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -84,7 +95,7 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
 
     init();
     return () => { cancelled = true; };
-  }, [targetContentId, courseId, shouldTrackProgress]);
+  }, [targetContentId, courseId, shouldTrackProgress, isEnrolled, isPreview]);
 
   // 2. Bind player engine instances exactly ONCE per unique stream URL.
   useEffect(() => {
@@ -201,6 +212,20 @@ export default function InlineVideoPlayer({ content, courseId, isEnrolled }) {
         </div>
       )}
       
+      {locked && !loading && (
+        <div className="flex flex-col items-center justify-center gap-3 text-center py-10 px-5 bg-zinc-900 text-white">
+          <div className="text-4xl" aria-hidden="true">🔒</div>
+          <h4 className="text-lg font-black text-white">This Video Is Locked</h4>
+          <p className="text-sm text-zinc-300">Please buy this course to watch this video and unlock the full learning material.</p>
+          <button type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('coursevault:buy-course'))}
+            className="px-5 py-2.5 bg-[#F26B4D] border-2 border-white rounded-lg font-black text-black">
+            Buy Course
+          </button>
+          <p className="text-xs text-zinc-400">Free preview videos remain available.</p>
+        </div>
+      )}
+
       {error && !loading && (
         <div className="text-center text-[#F26B4D] font-black uppercase tracking-wide py-16 px-4 bg-zinc-900 border-b-2 border-black">
           ❌ {error}

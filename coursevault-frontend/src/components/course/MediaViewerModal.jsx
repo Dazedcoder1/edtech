@@ -4,7 +4,7 @@ import { fetchAPI, BASE_URL, MEDIA_ORIGIN } from '../../services/api.js';
 import Hls from 'hls.js';
 import PdfCanvasViewer from './PdfCanvasViewer.jsx';
 
-export default function MediaViewerModal({ content, courseId, isEnrolled, onClose, onCompleted }) {
+export default function MediaViewerModal({ content, courseId, isEnrolled, onClose, onCompleted, onBuyCourse }) {
   const [loading, setLoading] = useState(true);
   const [streamUrl, setStreamUrl] = useState(null);
   // A directly-stored MP4 plays natively; HLS.js must not touch it.
@@ -13,6 +13,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
   const [pdfData, setPdfData] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState(null);
   const [error, setError] = useState(null);
+  const [locked, setLocked] = useState(false);
   const [savedPosition, setSavedPosition] = useState(0);
   
   const videoRef = useRef(null);
@@ -110,8 +111,14 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
     setPdfData(null);
     setDownloadUrl(null);
     setError(null);
+    setLocked(false);
 
     const initMedia = async () => {
+      if (!isEnrolled && content?.preview !== true) {
+        setLocked(true);
+        setLoading(false);
+        return;
+      }
       try {
         if (type.includes('video')) {
           const streamData = await fetchAPI(`/content/${targetContentId}/stream?courseId=${courseId || ''}`);
@@ -169,6 +176,11 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
 
           if (!response.ok) {
             const errData = await response.json().catch(() => ({}));
+            if (response.status === 403 && (errData.requiresEnrollment || /not enrolled|access denied/i.test(errData.error || ''))) {
+              setLocked(true);
+              setLoading(false);
+              return;
+            }
             throw new Error(errData.error || 'Failed to fetch PDF');
           }
 
@@ -205,6 +217,11 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
         }
       } catch (err) {
         if (isCancelled) return;
+        if (err?.status === 403 || err?.statusCode === 403 || err?.requiresEnrollment || /not enrolled|access denied/i.test(err?.message || '')) {
+          setLocked(true);
+          setLoading(false);
+          return;
+        }
         /*
          * An abort is either the timeout firing or the viewer closing. The
          * close path sets isCancelled first, so reaching here with an AbortError
@@ -232,7 +249,7 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
       // early on isCancelled so this cannot flash an error as the viewer closes.
       controller.abort();
     };
-  }, [targetContentId, type, courseId, isEnrolled]);
+  }, [targetContentId, type, courseId, isEnrolled, content?.preview]);
 
   useEffect(() => {
     if (!streamUrl || !videoRef.current || !type.includes('video')) return;
@@ -378,6 +395,25 @@ export default function MediaViewerModal({ content, courseId, isEnrolled, onClos
             </div>
           )}
           
+          {locked && !loading && (
+            <div className="flex flex-col items-center justify-center gap-3 md:gap-4 p-6 md:p-10 text-center max-w-md">
+              <div className="w-16 h-16 rounded-full border-[3px] border-black bg-[#F9E076] flex items-center justify-center shadow-[3px_3px_0px_0px_#111]">
+                <span className="text-3xl" aria-hidden="true">🔒</span>
+              </div>
+              <h4 className="text-xl md:text-2xl font-black text-black">This Content Is Locked</h4>
+              <p className="text-sm md:text-base text-gray-600 font-medium">
+                Buy this course to unlock this {isVideo ? 'video' : 'document'} and the rest of the learning material.
+              </p>
+              {onBuyCourse && (
+                <button type="button" onClick={onBuyCourse}
+                  className="mt-1 px-6 py-3 bg-[#F26B4D] border-2 border-black rounded-xl font-black text-black shadow-[3px_3px_0px_0px_#111]">
+                  Buy Course
+                </button>
+              )}
+              <p className="text-xs text-gray-500">Free preview content is still available.</p>
+            </div>
+          )}
+
           {error && !loading && (
             <div className="flex flex-col items-center justify-center font-bold text-red-500 gap-2 md:gap-3 p-6 md:p-8 text-center">
               <p className="text-sm md:text-base">Failed to load content.</p>
