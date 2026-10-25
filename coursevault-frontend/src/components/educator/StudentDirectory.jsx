@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Users, Search, X, Loader, AlertTriangle } from 'lucide-react';
+import { Users, Search, X, Loader, AlertTriangle, ShieldOff } from 'lucide-react';
 import { fetchAPI } from '../../services/api.js';
 
 /**
@@ -46,6 +46,9 @@ export default function StudentDirectory() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [courseFilter, setCourseFilter] = useState('');
+  const [revokingId, setRevokingId] = useState(null);
+  const [actionError, setActionError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +64,32 @@ export default function StudentDirectory() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const revokeAccess = async (r) => {
+    if (!r.enrollment_id || r.status !== 'active') return;
+    const student = r.student_name || 'this student';
+    const course = r.course_title || 'this course';
+    if (!window.confirm(`Revoke access for ${student} to "${course}"? Their enrollment and payment history will be kept.`)) return;
+
+    setRevokingId(r.enrollment_id);
+    setActionError('');
+    setActionMessage('');
+    try {
+      await fetchAPI(`/analytics/enrollments/${encodeURIComponent(r.enrollment_id)}/revoke`, {
+        method: 'POST',
+      });
+      setRows((current) => current.map((row) =>
+        row.enrollment_id === r.enrollment_id
+          ? { ...row, status: 'inactive' }
+          : row
+      ));
+      setActionMessage(`Access revoked for ${student} — ${course}.`);
+    } catch (err) {
+      setActionError(err.message || 'Could not revoke access. Please try again.');
+    } finally {
+      setRevokingId(null);
+    }
+  };
 
   const courses = useMemo(() => {
     const seen = new Map();
@@ -126,6 +155,17 @@ export default function StudentDirectory() {
         </p>
       )}
 
+      {actionError && (
+        <p role="alert" className="mb-3 rounded-lg border-2 border-red-500 bg-red-50 p-2 text-sm font-bold text-red-700">
+          {actionError}
+        </p>
+      )}
+      {actionMessage && (
+        <p role="status" className="mb-3 rounded-lg border-2 border-black bg-[#A7E2D1] p-2 text-sm font-bold text-black">
+          {actionMessage}
+        </p>
+      )}
+
       {/* ------------------------------------------------------------ filters */}
       <div className="flex flex-col sm:flex-row gap-2 mb-4">
         <div className="relative flex-1">
@@ -177,12 +217,13 @@ export default function StudentDirectory() {
                   <th className="py-2 pr-3 font-black uppercase text-xs">Course</th>
                   <th className="py-2 pr-3 font-black uppercase text-xs">Enrolled</th>
                   <th className="py-2 pr-3 font-black uppercase text-xs">Access</th>
-                  <th className="py-2 font-black uppercase text-xs">Last login</th>
+                  <th className="py-2 pr-2 font-black uppercase text-xs">Last login</th>
+                  <th className="py-2 font-black uppercase text-xs">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((r) => (
-                  <StudentRow key={`${r.student_id}-${r.course_id}`} r={r} />
+                  <StudentRow key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} revoking={revokingId === r.enrollment_id} />
                 ))}
               </tbody>
             </table>
@@ -191,7 +232,7 @@ export default function StudentDirectory() {
           {/* ---------------------------------------------------- mobile cards */}
           <div className="md:hidden flex flex-col gap-2">
             {filtered.map((r) => (
-              <StudentCard key={`${r.student_id}-${r.course_id}`} r={r} />
+              <StudentCard key={r.enrollment_id ?? `${r.student_id}-${r.course_id}`} r={r} onRevoke={revokeAccess} revoking={revokingId === r.enrollment_id} />
             ))}
           </div>
         </>
@@ -204,11 +245,17 @@ export default function StudentDirectory() {
 function useRowState(r) {
   const lapsed = r.expires_at && new Date(r.expires_at) <= new Date();
   const stale = daysSince(r.last_login);
+  const status = String(r.status || '').toLowerCase();
+  const accessLabel = status !== 'active'
+    ? (status === 'inactive' || status === 'revoked' ? 'Access revoked / inactive' : status || 'Unknown')
+    : (r.payment_status && r.payment_status !== 'completed' && Number(r.amount_paid) > 0
+        ? `Payment ${r.payment_status}`
+        : r.expires_at
+          ? (lapsed ? 'Expired' : new Date(r.expires_at).toLocaleDateString())
+          : 'Lifetime');
   return {
     lapsed,
-    accessLabel: r.expires_at
-      ? (lapsed ? 'Expired' : new Date(r.expires_at).toLocaleDateString())
-      : 'Lifetime',
+    accessLabel,
     lastLogin: r.last_login ? ago(r.last_login) : 'Never',
     // Highlighted rather than merely stated: never, or quiet for a fortnight.
     // Both are the teacher's cue to reach out, which is the point of the column.
@@ -216,7 +263,7 @@ function useRowState(r) {
   };
 }
 
-function StudentRow({ r }) {
+function StudentRow({ r, onRevoke, revoking }) {
   const { lapsed, accessLabel, lastLogin, lastLoginWarning } = useRowState(r);
 
   return (
@@ -243,14 +290,29 @@ function StudentRow({ r }) {
       <td className="py-2.5 pr-3 whitespace-nowrap">
         <span className={`font-bold ${lapsed ? 'text-[#E63946]' : ''}`}>{accessLabel}</span>
       </td>
-      <td className="py-2.5 whitespace-nowrap" title={fullDate(r.last_login)}>
+      <td className="py-2.5 pr-2 whitespace-nowrap" title={fullDate(r.last_login)}>
         <span className={`font-bold ${lastLoginWarning ? 'text-[#F26B4D]' : ''}`}>{lastLogin}</span>
+      </td>
+      <td className="py-2.5 whitespace-nowrap">
+        {r.status === 'active' ? (
+          <button
+            type="button"
+            onClick={() => onRevoke(r)}
+            disabled={revoking}
+            className="inline-flex items-center gap-1 rounded-lg border-2 border-black bg-[#F26B4D] px-2 py-1 text-xs font-black text-white disabled:opacity-50"
+          >
+            {revoking ? <Loader size={12} className="animate-spin" /> : <ShieldOff size={12} />}
+            {revoking ? 'Revoking…' : 'Revoke access'}
+          </button>
+        ) : (
+          <span className="text-xs font-bold text-gray-500">{r.status === 'inactive' || r.status === 'revoked' ? 'Revoked' : '—'}</span>
+        )}
       </td>
     </tr>
   );
 }
 
-function StudentCard({ r }) {
+function StudentCard({ r, onRevoke, revoking }) {
   const { lapsed, accessLabel, lastLogin, lastLoginWarning } = useRowState(r);
 
   return (
@@ -279,8 +341,22 @@ function StudentCard({ r }) {
         <span title={fullDate(r.enrolled_at)}>
           Enrolled {r.enrolled_at ? new Date(r.enrolled_at).toLocaleDateString() : '—'}
         </span>
-        <span className={lapsed ? 'text-[#E63946] font-bold' : ''}>Access: {accessLabel}</span>
+        <span className={lapsed || r.status !== 'active' ? 'text-[#E63946] font-bold' : ''}>Access: {accessLabel}</span>
       </div>
+      {r.status === 'active' && (
+        <button
+          type="button"
+          onClick={() => onRevoke(r)}
+          disabled={revoking}
+          className="mt-3 inline-flex items-center gap-1 rounded-lg border-2 border-black bg-[#F26B4D] px-3 py-2 text-xs font-black text-white disabled:opacity-50"
+        >
+          {revoking ? <Loader size={12} className="animate-spin" /> : <ShieldOff size={12} />}
+          {revoking ? 'Revoking…' : 'Revoke access'}
+        </button>
+      )}
+      {(r.status === 'inactive' || r.status === 'revoked') && (
+        <p className="mt-2 text-xs font-black text-red-600">Access revoked / inactive</p>
+      )}
     </div>
   );
 }

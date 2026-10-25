@@ -24,6 +24,7 @@ router.get("/students", authMiddleware, async (req, res) => {
 
         const { rows } = await pool.query(`
             SELECT
+                e.id            AS enrollment_id,
                 u.id            AS student_id,
                 u.name          AS student_name,
                 u.email         AS student_email,
@@ -78,6 +79,53 @@ router.get("/students", authMiddleware, async (req, res) => {
     } catch (err) {
         console.error("GET /analytics/students:", err);
         res.status(500).json({ error: "Could not load the student list" });
+    }
+});
+
+
+/**
+ * POST /api/analytics/enrollments/:enrollmentId/revoke
+ * Revoke one enrollment without deleting its payment or learning history.
+ * The existing `inactive` status is used because it is already supported by
+ * this application's enrollment lifecycle and is denied by activeEnrolmentSql.
+ */
+router.post("/enrollments/:enrollmentId/revoke", authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== "educator" && req.user.role !== "admin") {
+            return res.status(403).json({ error: "Only educators or admins can revoke access." });
+        }
+
+        const { enrollmentId } = req.params;
+        const isAdmin = req.user.role === "admin";
+
+        const result = await pool.query(`
+            UPDATE enrollments e
+               SET status = 'inactive',
+                   updated_at = NOW()
+              FROM courses c
+             WHERE e.id = $1
+               AND c.id = e.course_id
+               AND (c.educator_id = $2 OR $3::boolean)
+               AND e.status = 'active'
+         RETURNING e.id AS enrollment_id, e.user_id, e.course_id, e.status,
+                   e.payment_status, e.expires_at
+        `, [enrollmentId, req.user.id, isAdmin]);
+
+        if (result.rows.length === 0) {
+            // Avoid revealing whether an enrollment exists outside this educator's courses.
+            return res.status(404).json({
+                error: "Active enrollment not found, or you do not have permission to manage it."
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: "Access revoked for this course enrollment.",
+            enrollment: result.rows[0]
+        });
+    } catch (err) {
+        console.error("POST /analytics/enrollments/:enrollmentId/revoke:", err);
+        return res.status(500).json({ error: "Could not revoke enrollment access." });
     }
 });
 
