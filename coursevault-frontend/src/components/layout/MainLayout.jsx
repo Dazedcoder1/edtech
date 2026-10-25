@@ -355,6 +355,22 @@ export default function MainLayout() {
         />
       </nav>
 
+      {/* Floating WhatsApp support button */}
+      <a
+        href="https://wa.me/917833926889?text=Hi%2C%20I%20need%20help%20with%20your%20courses."
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Chat with us on WhatsApp"
+        title="Chat with us on WhatsApp"
+        className="fixed right-4 bottom-24 md:bottom-6 z-[60] flex h-14 w-14 items-center justify-center
+                   rounded-full bg-[#25D366] text-white shadow-lg ring-2 ring-white
+                   transition-transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300"
+      >
+        <svg viewBox="0 0 32 32" className="h-8 w-8" fill="currentColor" aria-hidden="true">
+          <path d="M16.04 3C8.87 3 3.04 8.82 3.04 15.99c0 2.29.6 4.52 1.74 6.49L3 29l6.7-1.75a13 13 0 0 0 6.33 1.63h.01c7.16 0 13-5.83 13-12.99A12.92 12.92 0 0 0 25.23 6.7 12.9 12.9 0 0 0 16.04 3Zm0 23.67h-.01c-1.92 0-3.8-.52-5.44-1.5l-.39-.23-3.98 1.04 1.06-3.88-.25-.4a10.62 10.62 0 0 1-1.63-5.71c0-5.89 4.79-10.68 10.69-10.68 2.85 0 5.53 1.11 7.54 3.13a10.6 10.6 0 0 1 3.13 7.55c0 5.89-4.79 10.68-10.72 10.68Zm5.87-8.01c-.32-.16-1.88-.93-2.17-1.03-.29-.1-.5-.16-.71.16-.21.32-.82 1.03-1 1.24-.18.21-.37.24-.69.08-.32-.16-1.35-.5-2.57-1.59-.95-.85-1.59-1.9-1.78-2.22-.18-.32-.02-.49.14-.65.14-.14.32-.37.48-.55.16-.18.21-.32.32-.53.11-.21.05-.4-.03-.56-.08-.16-.71-1.72-.98-2.36-.26-.62-.52-.53-.71-.54h-.61c-.21 0-.56.08-.85.4-.29.32-1.11 1.08-1.11 2.64s1.14 3.06 1.3 3.27c.16.21 2.24 3.42 5.43 4.8.76.33 1.35.53 1.81.68.76.24 1.45.21 2 .13.61-.09 1.88-.77 2.14-1.51.26-.74.26-1.37.18-1.51-.08-.13-.29-.21-.61-.37Z" />
+        </svg>
+      </a>
+
       {helpOpen && (
         <HelpDeskPanel
           isEducator={isStaff(user)}
