@@ -84,13 +84,35 @@
 
 /* Math display in quiz questions and options */
 .math-display {
-  display: inline-block;
-  vertical-align: middle;
+  /*
+   * baseline, not middle.
+   *
+   * `vertical-align: middle` lines the box's centre up with the middle of the
+   * parent's x-height rather than with the text baseline, so every inline
+   * equation floated above the words around it — "x² + 2x" sitting visibly
+   * higher than "Solve ... = 0". Baseline is what inline maths wants: KaTeX
+   * already carries the right baseline inside its own box, and the job of this
+   * rule is to stop anything overriding it.
+   */
+  display: inline;
+  vertical-align: baseline;
 }
 
 .math-display .katex {
-  font-size: 1.15em;
-  line-height: 1.5;
+  /*
+   * Was 1.15em, and 1.3em inside a quiz question.
+   *
+   * KaTeX already renders at 1.21em of its container by default, so those
+   * multiplied to roughly 1.6x the sentence around it. Oversized maths does not
+   * only look wrong, it drags the line box taller than the text line and makes
+   * the misalignment it causes look like a spacing bug. 1em lets KaTeX's own
+   * sizing do the work.
+   */
+  font-size: 1em;
+  /* inherit, not a number: a fixed line-height on an inline box that is taller
+     than the surrounding text is what makes lines overlap when a fraction
+     appears mid-sentence. */
+  line-height: inherit;
 }
 
 .math-display .katex-display .katex {
@@ -239,13 +261,17 @@
   display: inline-block;
 }
 
-/* Math rendering in different contexts */
-.quiz-question .math-display .katex {
-  font-size: 1.3em;
-}
-
+/*
+ * Maths matches the sentence it sits in.
+ *
+ * These were 1.3em and 1.1em on top of KaTeX's own 1.21em default. A question
+ * reading "Solve x² + 2x + 1 = 0" had the equation set half again as large as
+ * the words, which reads as a rendering fault rather than emphasis — and the
+ * taller inline box is what pushed the line spacing around.
+ */
+.quiz-question .math-display .katex,
 .quiz-option .math-display .katex {
-  font-size: 1.1em;
+  font-size: 1em;
 }
 
 /* Responsive math */
@@ -303,10 +329,22 @@
   overflow-wrap: break-word;
 }
 
+/*
+ * No overflow on inline maths. This was the main culprit.
+ *
+ * CSS gives a block container with `overflow` other than `visible` a baseline
+ * at its bottom margin edge rather than at the baseline of its content. So
+ * `overflow-x: auto` here silently redefined where the equation's baseline was
+ * — the whole expression dropped relative to the sentence, and the padding
+ * added to the gap. It was there to let a long equation scroll, but an inline
+ * fragment mid-sentence is not what needs scrolling.
+ *
+ * Scrolling still applies to display-mode maths further down, which is where
+ * long expressions actually live.
+ */
 .math-display .katex .katex-html {
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 2px 0;
+  overflow: visible;
+  padding: 0;
 }
 
 /* Selection highlight for math */
